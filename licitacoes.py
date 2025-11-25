@@ -16,8 +16,8 @@ PG_USER = "postgres"
 PG_PASS = "123"
 
 # CONFIGURAÇÃO - Telegram
-TELEGRAM_TOKEN = "8145377930:AAHQC83rZtxg0KD7kqzhIJCqr4RUpSRdeI8"
-TELEGRAM_CHAT_ID = "-4966623716"
+TELEGRAM_TOKEN = "8071395009:AAH-7P6Cys3hncbQdaJYB2paoK7sVeh884s"  
+TELEGRAM_CHAT_ID = "-1003163879445" 
 
 CHECK_INTERVAL_SECONDS = 1800  # 30 minutos
 
@@ -93,11 +93,10 @@ def format_item_message(item):
     return message
 
 # FUNÇÕES DE FETCH
-def fetch_dynamic_scroll(url, wait_selector="table, div", load_more_selector=None):
+def fetch_dynamic_scroll(url, wait_selector="table, div", stop_selector=None, date_threshold=None, max_scrolls=50):
     """
-    Busca o HTML usando o Playwright e simula a rolagem da página 
-    para carregar todos os resultados via lazy loading (scroll).
-    Esta função substitui a antiga fetch_dynamic para dar suporte a scroll infinito.
+    Busca o HTML usando o Playwright e simula a rolagem da página.
+    Adiciona lógica para parar a rolagem se uma data antiga for encontrada.
     """
     with sync_playwright() as p:
         browser = p.chromium.launch(headless=True)
@@ -105,30 +104,48 @@ def fetch_dynamic_scroll(url, wait_selector="table, div", load_more_selector=Non
         page.goto(url, timeout=60000)
         
         try:
-            # Espera inicial para o primeiro bloco de conteúdo
+            # Espera inicial
             page.wait_for_selector(wait_selector, timeout=30000)
         except:
             print("[FETCH] Aviso: O seletor de espera inicial não foi encontrado.")
             pass
 
-        print("[FETCH] Iniciando rolagem para carregar todos os itens...")
+        print("[FETCH] Iniciando rolagem para carregar itens recentes...")
         
         last_height = -1
         scroll_attempts = 0
-        MAX_SCROLL_ATTEMPTS = 50 # Limite de tentativas
+        
+        while scroll_attempts < max_scrolls:
+            # 1. Checa a condição de parada baseada em data (antes de rolar)
+            if stop_selector and date_threshold:
+                try:
+                    # Avalia se o texto do elemento de data contém o ano de parada
+                    last_date_text = page.evaluate(f"""
+                        (selector) => {{
+                            const elements = document.querySelectorAll(selector);
+                            return elements.length > 0 ? elements[elements.length - 1].textContent : null;
+                        }}
+                    """, stop_selector)
+                    
+                    if last_date_text and str(date_threshold) in last_date_text:
+                        print(f"[FETCH] Condição de parada atingida: Data '{date_threshold}' encontrada no seletor '{stop_selector}'.")
+                        break
+                        
+                except Exception as e:
+                    # Ignora falhas na avaliação do seletor e continua rolando
+                    # print(f"[FETCH] Erro ao checar data: {e}")
+                    pass
 
-        while scroll_attempts < MAX_SCROLL_ATTEMPTS:
-            # Rola até o final da página
+            # 2. Rola até o final da página
             page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
             
-            # Espera o novo conteúdo ser carregado
+            # 3. Espera o novo conteúdo ser carregado
             time.sleep(1.5) 
             
-            # Verifica se o tamanho do conteúdo aumentou
+            # 4. Verifica se o tamanho do conteúdo aumentou
             new_height = page.evaluate("document.body.scrollHeight")
             
             if new_height == last_height:
-                # Se o tamanho não mudou, chegamos ao final da lista
                 print(f"[FETCH] Fim da lista. Todos os itens carregados após {scroll_attempts} rolagens.")
                 break
             
@@ -136,8 +153,8 @@ def fetch_dynamic_scroll(url, wait_selector="table, div", load_more_selector=Non
             scroll_attempts += 1
             # print(f"[FETCH] Rolagem {scroll_attempts} realizada. Nova altura: {new_height}")
 
-        if scroll_attempts == MAX_SCROLL_ATTEMPTS:
-            print(f"[FETCH] Aviso: Limite de {MAX_SCROLL_ATTEMPTS} rolagens atingido. Pode haver mais dados.")
+        if scroll_attempts == max_scrolls:
+            print(f"[FETCH] Aviso: Limite máximo de {max_scrolls} rolagens atingido.")
 
         html = page.content()
         browser.close()
@@ -325,7 +342,16 @@ def parse_fiems_tabela(html, base_url="https://compras.fiems.com.br"):
 SITES = [
     {"name": "FIEP", "url": "https://portaldecompras.sistemafiep.org.br", "parser": parse_fiep, "base": "https://portaldecompras.sistemafiep.org.br"},
     {"name": "FIESC", "url": "https://portaldecompras.fiesc.com.br/Portal/Mural.aspx", "parser": parse_fiesc_tabela, "dynamic": True, "base": "https://portaldecompras.fiesc.com.br"},
-    {"name": "FIEMS", "url": "https://compras.fiems.com.br/portal/Mural.aspx?nNmTela=E", "parser": parse_fiems_tabela, "dynamic": True, "base": "https://compras.fiems.com.br"}, # <--- NOVO PARSER E LIGAÇÃO
+    {"name": "FIEMS", 
+     "url": "https://compras.fiems.com.br/portal/Mural.aspx?nNmTela=E", 
+     "parser": parse_fiems_tabela, 
+     "dynamic": True, 
+     "base": "https://compras.fiems.com.br",
+     # CONFIGURAÇÃO DE PARADA BASEADA EM DATA
+     "stop_selector": "tbody#trListaMuralProcesso tr td:nth-child(7)",
+     "date_threshold": 2024
+    },
+    {"name": "FIEMS", "url": "https://compras.fiems.com.br/portal/Mural.aspx?nNmTela=E", "parser": parse_fiems_tabela, "dynamic": True, "base": "https://compras.fiems.com.br"},
     {"name": "Licitacoes-e", "url": "https://www.licitacoes-e.com.br/aop/index.jsp?codSite=39763", "parser": parse_div_list, "dynamic": True, "base": "https://www.licitacoes-e.com.br"},
     {"name": "BNC", "url": "https://bnccompras.com/", "parser": parse_bnc, "dynamic": True, "base": "https://bnccompras.com"},
     {"name": "Sanesul", "url": "https://www.sanesul.ms.gov.br/licitacao/tipolicitacao/licitacao", "parser": parse_div_list, "dynamic": True, "base": "https://www.sanesul.ms.gov.br"},
@@ -342,8 +368,15 @@ def main_loop():
                     
                     # Usa fetch_dynamic_scroll para todos os sites dinâmicos agora
                     if site.get("dynamic"):
-                        # O seletor de espera é ajustado implicitamente ou usa o padrão 'table, div'
-                        html = fetch_dynamic_scroll(site["url"])
+                        # Novos parâmetros: seletor de parada e data limite
+                        stop_sel = site.get("stop_selector")
+                        date_thres = site.get("date_threshold")
+                        
+                        html = fetch_dynamic_scroll(
+                            site["url"], 
+                            stop_selector=stop_sel, 
+                            date_threshold=date_thres
+                        )
                     else:
                         response = requests.get(site["url"], timeout=30)
                         response.raise_for_status()

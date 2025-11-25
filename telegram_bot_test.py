@@ -1,8 +1,8 @@
 import requests
 
 # CONFIGURAÇÃO
-TELEGRAM_TOKEN = "8071395009:AAH-7P6Cys3hncbQdaJYB2paoK7sVeh884s"  # Substitua pelo token real
-TELEGRAM_CHAT_ID = "-1003163879445"    # Seu chat_id do grupo (negativo)
+TELEGRAM_TOKEN = "8071395009:AAH-7P6Cys3hncbQdaJYB2paoK7sVeh884s"  
+TELEGRAM_CHAT_ID = "-1003163879445"    
 
 # Mensagem de teste
 mensagem = "✅ Teste de envio de mensagens do bot."
