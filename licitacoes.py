@@ -49,27 +49,33 @@ conn.commit()
 def md5(s: str) -> str:
     return hashlib.md5(s.encode("utf-8")).hexdigest()
 
+def generate_unique_id(item):
+    # Gerar um ID único com base em campos fixos, como título e organização
+    unique_str = (item['title'] or "") + "|" + (item['org'] or "")
+    return hashlib.md5(unique_str.encode("utf-8")).hexdigest()
+
 def is_new_and_save(item):
-    # Usamos URL e Título para criar um ID único
-    unique_str = (item['url'] or "") + "|" + item['title']
-    uid = md5(unique_str)
+    # Gerar um ID único baseado no título e organização
+    uid = generate_unique_id(item)
+    
+    # Verifica se o ID já existe no banco de dados
     cur.execute("SELECT 1 FROM notices WHERE id=%s", (uid,))
     if cur.fetchone():
-        return False, uid
+        return False, uid  # Se já existe, não insere novamente
+    
     try:
-        # Nota: O campo 'obj' (objeto) não está na tabela notices, então não o inserimos aqui.
-        # Poderíamos criar uma coluna nova ou adicioná-lo ao 'title' ou 'raw_hash'.
-        # Por enquanto, ele só será usado para o alerta Telegram.
+        # Inserir o item no banco de dados
         cur.execute(
             "INSERT INTO notices (id, title, org, url, published, raw_hash) VALUES (%s,%s,%s,%s,%s,%s)",
-            (uid, item['title'], item['org'], item['url'], item['published'], md5(json.dumps(item, ensure_ascii=False)))
+            (uid, item['title'], item['org'], item['url'], item['published'], hashlib.md5(json.dumps(item, ensure_ascii=False).encode('utf-8')).hexdigest())
         )
         conn.commit()
-        return True, uid
+        return True, uid  # Item inserido com sucesso
     except Exception as e:
         conn.rollback()
         print(f"[ERRO SQL] Falha ao inserir item: {e}")
-        return False, uid
+        return False, uid    
+    
 def escape_markdown(text):
     """
     Escapa os caracteres especiais usados no Markdown do Telegram, como:
