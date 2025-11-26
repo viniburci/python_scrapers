@@ -70,10 +70,31 @@ def is_new_and_save(item):
         conn.rollback()
         print(f"[ERRO SQL] Falha ao inserir item: {e}")
         return False, uid
+def escape_markdown(text):
+    """
+    Escapa os caracteres especiais usados no Markdown do Telegram, como:
+    - _ (underline)
+    - * (asterisco)
+    - [ ] (colchetes)
+    - ( ) (parênteses)
+    - ~ (til)
+    """
+    # Escapa os caracteres que têm significado especial no Markdown
+    text = re.sub(r'([\\`*_{}[\]()#+\-.!])', r'\\\1', text)
+    return text
 
 def send_telegram_message(msg):
     url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
-    payload = {"chat_id": TELEGRAM_CHAT_ID, "text": msg, "disable_web_page_preview": False, "parse_mode": "Markdown"}
+    
+    # Escapa o texto usando a função de escape Markdown
+    escaped_msg = escape_markdown(msg)
+
+    payload = {
+        "chat_id": TELEGRAM_CHAT_ID,
+        "text": escaped_msg,
+        "disable_web_page_preview": False,
+        "parse_mode": "Markdown"
+    }
     
     retries = 0
     max_retries = 5  # Limite de tentativas
@@ -86,10 +107,8 @@ def send_telegram_message(msg):
                 return True, resp.text
             elif resp.status_code == 429:
                 # Extrai o tempo de espera recomendado (em segundos) da resposta
-                retry_after = resp.json().get("parameters", {}).get("retry_after", 19)  # O valor default pode ser 19, mas será substituído pela resposta
+                retry_after = resp.json().get("parameters", {}).get("retry_after", 19)  # Valor padrão 19
                 print(f"[ALERTA] Limite de requisições atingido. Esperando {retry_after} segundos...")
-                
-                # Aguardar o tempo retornado pelo Telegram antes de tentar novamente
                 time.sleep(retry_after)
                 retries += 1
             else:
@@ -279,34 +298,81 @@ def parse_fiesc_tabela(html, base_url="https://portaldecompras.fiesc.com.br"):
         
     return items
 
+def fetch_details_page(url, base_url="https://bnccompras.com"):
+    """
+    Função para buscar a página de detalhes da licitação e extrair o objeto da licitação.
+    """
+    try:
+        # Fazer a requisição para a página de detalhes
+        response = requests.get(url, timeout=30)
+        response.raise_for_status()  # Garante que o status seja 200 OK
+        soup = BeautifulSoup(response.text, "lxml")
+        
+        # Procurar o campo "OBJETO" dentro da textarea
+        objeto_textarea = soup.find("textarea", {"id": "ProductOrService"})
+        
+        if objeto_textarea:
+            # Retorna o conteúdo do objeto
+            return objeto_textarea.get_text(strip=True)
+        else:
+            return None  # Caso o objeto não seja encontrado
+        
+    except requests.exceptions.RequestException as e:
+        print(f"[ERRO] Falha ao acessar a página de detalhes: {e}")
+        return None
 
 def parse_bnc(html, base_url="https://bnccompras.com"):
     """
-    Parser para o site BNC Compras. Este parser extrai as informações do site de licitações.
+    Parser para o site BNC Compras. Este parser extrai as informações do site de licitações,
+    incluindo os detalhes da licitação após o clique no link.
     """
     soup = BeautifulSoup(html, "lxml")
     items = []
-    rows = soup.select("tr[style]")  # Assumindo que cada linha de licitação é um <tr> com estilo
-    for row in rows:
-        cols = row.find_all("td")
-        if len(cols) < 5:
-            continue
-        
-        # Extração dos dados
-        title = cols[1].get_text(strip=True)
-        org = cols[0].get_text(strip=True)
-        published = cols[3].get_text(strip=True)
-        url = urllib.parse.urljoin(base_url, cols[1].select_one("a")["href"]) if cols[1].select_one("a") else None
-        
-        if title and url:
-            items.append({
-                "title": title,
-                "org": org,
-                "url": url,
-                "published": published
-            })
-    return items
 
+    # Encontrando todas as linhas de licitação dentro do corpo da tabela
+    rows = soup.select("tbody#tableProcessDataBody tr")
+    
+    for row in rows:
+        # Extração de todas as células de cada linha
+        cols = row.find_all("td")
+        
+        # Se a linha não tiver o número esperado de células, ignoramos
+        if len(cols) < 8:
+            continue
+
+        # Extrair os dados das células específicas
+        url_el = cols[0].select_one("a")  # Link do processo
+        url = urllib.parse.urljoin(base_url, url_el["href"]) if url_el else None
+        org = cols[1].get_text(strip=True)  # Nome da organização
+        licitacao_codigo = cols[2].get_text(strip=True)  # Código da licitação (35/2025)
+        tipo_licitacao = cols[3].get_text(strip=True)  # Tipo de licitação (PREGÃO ELETRÔNICO)
+        local = cols[4].get_text(strip=True)  # Localização (PAIÇANDU-PR)
+        objeto = cols[5].get_text(strip=True)  # Objeto (RECEPÇÃO DE PROPOSTAS)
+        data_abertura = cols[6].get_text(strip=True)  # Data de Abertura (26/11/2025 10:36)
+        data_encerramento = cols[7].get_text(strip=True)  # Data de Encerramento (11/12/2025 09:00)
+
+        # Agora, vamos buscar os detalhes do objeto da licitação, clicando no link
+        if url:
+            # Acessando a página de detalhes
+            objeto_detalhado = fetch_details_page(url, base_url)
+        else:
+            objeto_detalhado = None
+        
+        # Se encontramos o objeto detalhado, usamos ele, senão mantemos o objeto atual
+        objeto = objeto_detalhado if objeto_detalhado else objeto
+
+        # Adicionando o item ao array de items
+        items.append({
+            "title": licitacao_codigo,  # Usando o código da licitação como título
+            "org": org,
+            "url": url,
+            "published": data_abertura,
+            "obj": objeto,  # Objeto da licitação, agora detalhado se disponível
+            "location": local,
+            "closing_date": data_encerramento
+        })
+
+    return items
 
 def parse_fiems_tabela(html, base_url="https://compras.fiems.com.br"):
     """
@@ -362,8 +428,8 @@ def parse_fiems_tabela(html, base_url="https://compras.fiems.com.br"):
 
 # SITES
 SITES = [
-    {"name": "FIEP", "url": "https://portaldecompras.sistemafiep.org.br", "parser": parse_fiep, "base": "https://portaldecompras.sistemafiep.org.br"},
-    {"name": "FIESC", "url": "https://portaldecompras.fiesc.com.br/Portal/Mural.aspx", "parser": parse_fiesc_tabela, "dynamic": True, "base": "https://portaldecompras.fiesc.com.br"},
+    #{"name": "FIEP", "url": "https://portaldecompras.sistemafiep.org.br", "parser": parse_fiep, "base": "https://portaldecompras.sistemafiep.org.br"},
+    #{"name": "FIESC", "url": "https://portaldecompras.fiesc.com.br/Portal/Mural.aspx", "parser": parse_fiesc_tabela, "dynamic": True, "base": "https://portaldecompras.fiesc.com.br"},
     #{"name": "FIEMS", 
     # "url": "https://compras.fiems.com.br/portal/Mural.aspx?nNmTela=E", 
     # "parser": parse_fiems_tabela, 
@@ -373,7 +439,7 @@ SITES = [
     # "stop_selector": "tbody#trListaMuralProcesso tr td:nth-child(7)",
     # "date_threshold": 2024
     #},
-    {"name": "Licitacoes-e", "url": "https://www.licitacoes-e.com.br/aop/index.jsp?codSite=39763", "parser": parse_div_list, "dynamic": True, "base": "https://www.licitacoes-e.com.br"},
+    #{"name": "Licitacoes-e", "url": "https://www.licitacoes-e.com.br/aop/index.jsp?codSite=39763", "parser": parse_div_list, "dynamic": True, "base": "https://www.licitacoes-e.com.br"},
     {"name": "BNC", "url": "https://bnccompras.com/Process/ProcessSearchPublic?param1=0", "parser": parse_bnc, "dynamic": True, "base": "https://bnccompras.com/Process/ProcessSearchPublic?param1=0"},
     {"name": "Sanesul", "url": "https://www.sanesul.ms.gov.br/licitacao/tipolicitacao/licitacao", "parser": parse_div_list, "dynamic": True, "base": "https://www.sanesul.ms.gov.br"},
     {"name": "Casan", "url": "https://www.casan.com.br/menu-conteudo/index/url/licitacoes-em-andamento#0", "parser": parse_div_list, "dynamic": True, "base": "https://www.casan.com.br"},
