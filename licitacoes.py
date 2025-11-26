@@ -74,8 +74,30 @@ def is_new_and_save(item):
 def send_telegram_message(msg):
     url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
     payload = {"chat_id": TELEGRAM_CHAT_ID, "text": msg, "disable_web_page_preview": False, "parse_mode": "Markdown"}
-    resp = requests.post(url, json=payload, timeout=15)
-    return resp.ok, resp.text
+    
+    retries = 0
+    max_retries = 5  # Limite de tentativas
+    wait_time = 0  # Inicialmente sem tempo de espera
+
+    while retries < max_retries:
+        try:
+            resp = requests.post(url, json=payload, timeout=15)
+            if resp.ok:
+                return True, resp.text
+            elif resp.status_code == 429:
+                # Extrai o tempo de espera recomendado (em segundos) da resposta
+                retry_after = resp.json().get("parameters", {}).get("retry_after", 19)  # O valor default pode ser 19, mas será substituído pela resposta
+                print(f"[ALERTA] Limite de requisições atingido. Esperando {retry_after} segundos...")
+                
+                # Aguardar o tempo retornado pelo Telegram antes de tentar novamente
+                time.sleep(retry_after)
+                retries += 1
+            else:
+                return False, f"Erro desconhecido: {resp.text}"
+        except requests.exceptions.RequestException as e:
+            return False, f"Erro de conexão: {e}"
+
+    return False, f"Falha após {max_retries} tentativas."
 
 def format_item_message(item):
     """Formata a mensagem para o Telegram, incluindo o campo 'obj' se presente."""
@@ -342,18 +364,17 @@ def parse_fiems_tabela(html, base_url="https://compras.fiems.com.br"):
 SITES = [
     {"name": "FIEP", "url": "https://portaldecompras.sistemafiep.org.br", "parser": parse_fiep, "base": "https://portaldecompras.sistemafiep.org.br"},
     {"name": "FIESC", "url": "https://portaldecompras.fiesc.com.br/Portal/Mural.aspx", "parser": parse_fiesc_tabela, "dynamic": True, "base": "https://portaldecompras.fiesc.com.br"},
-    {"name": "FIEMS", 
-     "url": "https://compras.fiems.com.br/portal/Mural.aspx?nNmTela=E", 
-     "parser": parse_fiems_tabela, 
-     "dynamic": True, 
-     "base": "https://compras.fiems.com.br",
+    #{"name": "FIEMS", 
+    # "url": "https://compras.fiems.com.br/portal/Mural.aspx?nNmTela=E", 
+    # "parser": parse_fiems_tabela, 
+    #"dynamic": True, 
+    # "base": "https://compras.fiems.com.br",
      # CONFIGURAÇÃO DE PARADA BASEADA EM DATA
-     "stop_selector": "tbody#trListaMuralProcesso tr td:nth-child(7)",
-     "date_threshold": 2024
-    },
-    {"name": "FIEMS", "url": "https://compras.fiems.com.br/portal/Mural.aspx?nNmTela=E", "parser": parse_fiems_tabela, "dynamic": True, "base": "https://compras.fiems.com.br"},
+    # "stop_selector": "tbody#trListaMuralProcesso tr td:nth-child(7)",
+    # "date_threshold": 2024
+    #},
     {"name": "Licitacoes-e", "url": "https://www.licitacoes-e.com.br/aop/index.jsp?codSite=39763", "parser": parse_div_list, "dynamic": True, "base": "https://www.licitacoes-e.com.br"},
-    {"name": "BNC", "url": "https://bnccompras.com/", "parser": parse_bnc, "dynamic": True, "base": "https://bnccompras.com"},
+    {"name": "BNC", "url": "https://bnccompras.com/Process/ProcessSearchPublic?param1=0", "parser": parse_bnc, "dynamic": True, "base": "https://bnccompras.com/Process/ProcessSearchPublic?param1=0"},
     {"name": "Sanesul", "url": "https://www.sanesul.ms.gov.br/licitacao/tipolicitacao/licitacao", "parser": parse_div_list, "dynamic": True, "base": "https://www.sanesul.ms.gov.br"},
     {"name": "Casan", "url": "https://www.casan.com.br/menu-conteudo/index/url/licitacoes-em-andamento#0", "parser": parse_div_list, "dynamic": True, "base": "https://www.casan.com.br"},
 ]
