@@ -432,31 +432,34 @@ def parse_fiems_tabela(html, base_url="https://compras.fiems.com.br"):
         
     return items
 
-
 def parse_sanesul(html, base_url="https://www.sanesul.ms.gov.br"):
     """Parser para o site de Licitações da Sanesul."""
     soup = BeautifulSoup(html, "lxml")
     items = []
 
-    # Encontrar a tabela com as licitações
+    # Encontrando a tabela de licitações
     table = soup.find("table", {"id": "conteudo_gridLicitacao"})
     if not table:
         print("[ERRO] Tabela de licitações não encontrada.")
-        return []
+        return [], None
 
-    # Iterar sobre as linhas da tabela (ignorando o cabeçalho)
-    rows = table.find_all("tr")[1:]
+    rows = table.find_all("tr")[1:]  # Ignorando o cabeçalho da tabela
     for row in rows:
         cols = row.find_all("td")
         if len(cols) < 6:
-            continue  # Ignorar linhas incompletas
+            continue  # Ignora linhas que não possuem células suficientes
 
+        # Extrair as colunas específicas
         numero = cols[0].get_text(strip=True)
         ano = cols[1].get_text(strip=True)
         objeto = cols[2].get_text(strip=True)
         data_abertura = cols[3].get_text(strip=True)
         fuso_horario = cols[4].get_text(strip=True)
         link_mais_detalhes = cols[5].find("a", {"title": "Mais detalhes da Licitação!"})
+
+        # Ignorar itens de paginação (que geralmente contêm palavras como "Último", "Página", ou padrões como "1/2")
+        if any(phrase in numero for phrase in ["Último", "Página", "/"]):
+            continue  # Ignora se houver qualquer um desses termos no número da licitação
 
         detalhes_url = None
         if link_mais_detalhes:
@@ -471,46 +474,64 @@ def parse_sanesul(html, base_url="https://www.sanesul.ms.gov.br"):
             "published": data_abertura,
             "fuso_horario": fuso_horario
         })
-    
-    return items
+
+    # Agora, procurar o link para a próxima página
+    pagination = soup.find("tr", {"class": "pagination"})
+    next_page_url = None
+    if pagination:
+        # Encontrar todos os links para as páginas
+        page_links = pagination.find_all("a", href=True)
+        
+        # Tentar identificar a próxima página com base no conteúdo de 'Page$X'
+        for link in page_links:
+            href = link["href"]
+            if 'Page$' in href and 'Último' not in href:  # Ignora 'Último' e pega o próximo número de página
+                next_page_url = base_url + '?' + href.split('=')[-1]  # Extrai a URL da próxima página
+
+    return items, next_page_url
 
 def fetch_sanesul_page(url):
-    """Função para buscar o conteúdo HTML da página de licitações da Sanesul."""
-    response = requests.get(url, timeout=30)
-    response.raise_for_status()  # Garante que o status seja 200 OK
-    return response.text
+    """Função para buscar a página HTML e retornar o conteúdo."""
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"
+    }
+    response = requests.get(url, headers=headers)
+    if response.status_code == 200:
+        return response.text
+    else:
+        print(f"[ERRO] Falha ao buscar página: {response.status_code}")
+        return None
 
 def fetch_all_sanesul_licitacoes(base_url="https://www.sanesul.ms.gov.br/licitacao/tipolicitacao/licitacao"):
-    """Função para buscar todas as licitações, incluindo paginação."""
-    page_number = 1
+    """Função para buscar todas as licitações, incluindo navegação entre páginas."""
     all_items = []
+    next_page_url = base_url
 
-    while True:
-        print(f"[INFO] Buscando página {page_number} de licitações...")
+    while next_page_url:
+        print(f"[INFO] Buscando página: {next_page_url}")
         
-        # Monta a URL para a página corrente
-        url = f"{base_url}?page={page_number}"
-        html = fetch_sanesul_page(url)
+        # Buscar o HTML da página atual
+        html = fetch_sanesul_page(next_page_url)
+        if not html:
+            print("[ERRO] Não foi possível carregar a página.")
+            break
         
-        # Parser para extrair as licitações da página
-        items = parse_sanesul(html, base_url)
+        # Parse da página atual
+        items, next_page_url = parse_sanesul(html, base_url)
+        
+        # Se não houver itens ou próxima página, interromper
+        if not items:
+            print("[INFO] Nenhuma licitação encontrada ou fim das páginas.")
+            break
+        
+        # Adiciona os itens da página atual à lista total
         all_items.extend(items)
 
-        soup = BeautifulSoup(html, "lxml")
-        
-        # Buscar o componente de paginação
-        pagination = soup.find("table", {"class": "pagination"})
-        
-        # Verifica se há uma próxima página
-        if pagination:
-            next_page_link = pagination.find("a", string=str(page_number + 1))
-            if next_page_link:
-                page_number += 1  # Se houver próxima página, aumenta o número da página
-            else:
-                break  # Se não houver próxima página, sai do loop
-        else:
-            break  # Se não encontrar o componente de paginação, sai do loop
-    
+        # Se próxima página não existir, o loop será interrompido
+        if not next_page_url:
+            print("[INFO] Não há mais páginas para buscar.")
+            break
+
     return all_items
 
 
@@ -532,24 +553,46 @@ SITES = [
     {"name": "Sanesul", 
      "url": "https://www.sanesul.ms.gov.br/licitacao/tipolicitacao/licitacao", 
      "parser": parse_sanesul, 
-     "dynamic": True, 
+     "dynamic": False,
      "base": "https://www.sanesul.ms.gov.br",
-     "stop_selector": "table#conteudo_gridLicitacao tr td:nth-child(4)",  # A coluna com a data de abertura
+     "stop_selector": "table#conteudo_gridLicitacao tr td:nth-child(4)", 
      "date_threshold": 2025},
-    {"name": "Casan", "url": "https://www.casan.com.br/menu-conteudo/index/url/licitacoes-em-andamento#0", "parser": parse_div_list, "dynamic": True, "base": "https://www.casan.com.br"},
+    #{"name": "Casan", "url": "https://www.casan.com.br/menu-conteudo/index/url/licitacoes-em-andamento#0", "parser": parse_div_list, "dynamic": True, "base": "https://www.casan.com.br"},
 ]
 
+# LOOP PRINCIPAL
 # LOOP PRINCIPAL
 def main_loop():
     while True:
         try:
             for site in SITES:
+                
+                # --- TRATAMENTO ESPECIAL PARA SANESUL (PAGINAÇÃO ESTÁTICA) ---
+                if site['name'] == 'Sanesul':
+                    print(f"[INFO] Buscando site: {site['name']} (Paginação Estática)")
+                    # Chama a função que gerencia toda a paginação
+                    items = fetch_all_sanesul_licitacoes(site['url'])
+                    print(f"[INFO] {len(items)} itens encontrados em {site['name']}")
+                    
+                    # Prossiga para o processamento de novos itens
+                    new_count = 0
+                    for item in items:
+                        is_new, _ = is_new_and_save(item)
+                        if is_new:
+                            new_count += 1
+                            msg = format_item_message(item)
+                            ok, resp = send_telegram_message(msg)
+                            print(f"[ALERTA] Novo item [{site['name']}]: {item['title']}", "Enviado" if ok else f"Erro: {resp}")
+                    
+                    print(f"[INFO] {new_count} novos alertas enviados para {site['name']}")
+                    continue # Pula para o próximo site
+
+                # --- FLUXO PADRÃO (Dinâmico ou Estático de página única) ---
                 try:
                     print(f"[INFO] Buscando site: {site['name']} ({site['url']})")
                     
-                    # Usa fetch_dynamic_scroll para todos os sites dinâmicos agora
                     if site.get("dynamic"):
-                        # Novos parâmetros: seletor de parada e data limite
+                        # ... lógica original do fetch_dynamic_scroll ...
                         stop_sel = site.get("stop_selector")
                         date_thres = site.get("date_threshold")
                         
@@ -558,14 +601,13 @@ def main_loop():
                             stop_selector=stop_sel, 
                             date_threshold=date_thres
                         )
+                        items = site["parser"](html, base_url=site.get("base"))
                     else:
                         response = requests.get(site["url"], timeout=30)
                         response.raise_for_status()
                         html = response.text
+                        items = site["parser"](html, base_url=site.get("base"))
 
-                    print(f"[INFO] Página carregada: {len(html)} bytes")
-                    
-                    items = site["parser"](html, base_url=site.get("base"))
                     print(f"[INFO] {len(items)} itens encontrados em {site['name']}")
                     
                     new_count = 0
@@ -578,7 +620,7 @@ def main_loop():
                             print(f"[ALERTA] Novo item [{site['name']}]: {item['title']}", "Enviado" if ok else f"Erro: {resp}")
                     
                     print(f"[INFO] {new_count} novos alertas enviados para {site['name']}")
-                
+
                 except requests.exceptions.RequestException as e:
                     print(f"[ERRO] Falha de requisição no site {site['name']}: {e}")
                 except Exception as e:
