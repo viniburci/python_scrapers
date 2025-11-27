@@ -19,7 +19,7 @@ PG_PASS = "123"
 TELEGRAM_TOKEN = "8071395009:AAH-7P6Cys3hncbQdaJYB2paoK7sVeh884s"  
 TELEGRAM_CHAT_ID = "-1003163879445" 
 
-CHECK_INTERVAL_SECONDS = 1800  # 30 minutos
+CHECK_INTERVAL_SECONDS = 15  # 1800 == 30 minutos
 
 # Conexão PostgreSQL
 try:
@@ -432,6 +432,88 @@ def parse_fiems_tabela(html, base_url="https://compras.fiems.com.br"):
         
     return items
 
+
+def parse_sanesul(html, base_url="https://www.sanesul.ms.gov.br"):
+    """Parser para o site de Licitações da Sanesul."""
+    soup = BeautifulSoup(html, "lxml")
+    items = []
+
+    # Encontrar a tabela com as licitações
+    table = soup.find("table", {"id": "conteudo_gridLicitacao"})
+    if not table:
+        print("[ERRO] Tabela de licitações não encontrada.")
+        return []
+
+    # Iterar sobre as linhas da tabela (ignorando o cabeçalho)
+    rows = table.find_all("tr")[1:]
+    for row in rows:
+        cols = row.find_all("td")
+        if len(cols) < 6:
+            continue  # Ignorar linhas incompletas
+
+        numero = cols[0].get_text(strip=True)
+        ano = cols[1].get_text(strip=True)
+        objeto = cols[2].get_text(strip=True)
+        data_abertura = cols[3].get_text(strip=True)
+        fuso_horario = cols[4].get_text(strip=True)
+        link_mais_detalhes = cols[5].find("a", {"title": "Mais detalhes da Licitação!"})
+
+        detalhes_url = None
+        if link_mais_detalhes:
+            detalhes_url = link_mais_detalhes.get("href")
+            detalhes_url = urllib.parse.urljoin(base_url, detalhes_url)
+
+        items.append({
+            "title": f"Licitação {numero}/{ano}",
+            "org": "Sanesul",
+            "obj": objeto,
+            "url": detalhes_url,
+            "published": data_abertura,
+            "fuso_horario": fuso_horario
+        })
+    
+    return items
+
+def fetch_sanesul_page(url):
+    """Função para buscar o conteúdo HTML da página de licitações da Sanesul."""
+    response = requests.get(url, timeout=30)
+    response.raise_for_status()  # Garante que o status seja 200 OK
+    return response.text
+
+def fetch_all_sanesul_licitacoes(base_url="https://www.sanesul.ms.gov.br/licitacao/tipolicitacao/licitacao"):
+    """Função para buscar todas as licitações, incluindo paginação."""
+    page_number = 1
+    all_items = []
+
+    while True:
+        print(f"[INFO] Buscando página {page_number} de licitações...")
+        
+        # Monta a URL para a página corrente
+        url = f"{base_url}?page={page_number}"
+        html = fetch_sanesul_page(url)
+        
+        # Parser para extrair as licitações da página
+        items = parse_sanesul(html, base_url)
+        all_items.extend(items)
+
+        soup = BeautifulSoup(html, "lxml")
+        
+        # Buscar o componente de paginação
+        pagination = soup.find("table", {"class": "pagination"})
+        
+        # Verifica se há uma próxima página
+        if pagination:
+            next_page_link = pagination.find("a", string=str(page_number + 1))
+            if next_page_link:
+                page_number += 1  # Se houver próxima página, aumenta o número da página
+            else:
+                break  # Se não houver próxima página, sai do loop
+        else:
+            break  # Se não encontrar o componente de paginação, sai do loop
+    
+    return all_items
+
+
 # SITES
 SITES = [
     #{"name": "FIEP", "url": "https://portaldecompras.sistemafiep.org.br", "parser": parse_fiep, "base": "https://portaldecompras.sistemafiep.org.br"},
@@ -446,8 +528,14 @@ SITES = [
     # "date_threshold": 2024
     #},
     #{"name": "Licitacoes-e", "url": "https://www.licitacoes-e.com.br/aop/index.jsp?codSite=39763", "parser": parse_div_list, "dynamic": True, "base": "https://www.licitacoes-e.com.br"},
-    {"name": "BNC", "url": "https://bnccompras.com/Process/ProcessSearchPublic?param1=0", "parser": parse_bnc, "dynamic": True, "base": "https://bnccompras.com/Process/ProcessSearchPublic?param1=0"},
-    {"name": "Sanesul", "url": "https://www.sanesul.ms.gov.br/licitacao/tipolicitacao/licitacao", "parser": parse_div_list, "dynamic": True, "base": "https://www.sanesul.ms.gov.br"},
+    #{"name": "BNC", "url": "https://bnccompras.com/Process/ProcessSearchPublic?param1=0", "parser": parse_bnc, "dynamic": True, "base": "https://bnccompras.com/Process/ProcessSearchPublic?param1=0"},
+    {"name": "Sanesul", 
+     "url": "https://www.sanesul.ms.gov.br/licitacao/tipolicitacao/licitacao", 
+     "parser": parse_sanesul, 
+     "dynamic": True, 
+     "base": "https://www.sanesul.ms.gov.br",
+     "stop_selector": "table#conteudo_gridLicitacao tr td:nth-child(4)",  # A coluna com a data de abertura
+     "date_threshold": 2025},
     {"name": "Casan", "url": "https://www.casan.com.br/menu-conteudo/index/url/licitacoes-em-andamento#0", "parser": parse_div_list, "dynamic": True, "base": "https://www.casan.com.br"},
 ]
 
