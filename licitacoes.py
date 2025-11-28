@@ -439,31 +439,25 @@ def parse_sanesul_from_playwright_content(html, base_url="https://www.sanesul.ms
     """
     soup = BeautifulSoup(html, "lxml")
     items = []
+    # NOVO: Variável para armazenar o ano da última licitação (útil para o filtro)
+    last_item_year = None 
 
     table = soup.find("table", {"id": "conteudo_gridLicitacao"})
     if not table:
         print("[ERRO PARSER] Tabela de licitações não encontrada no HTML.")
-        return items, None 
+        return items, last_item_year # Retorna com last_item_year = None
 
     rows = table.find_all("tr")[1:] 
 
     for row in rows:
+        # ... (Filtros A, B e Extração de Dados)
         cols = row.find_all("td")
         
         # --- FILTRO A: Linha de Paginação / Sub-Tabela / Lixo ---
-        # 1. Linhas com apenas uma coluna são provavelmente a paginação ou subtítulos.
-        if len(cols) == 1:
-            # Garante que ignora a linha que contém o bloco de paginação
-            if cols[0].find("a", href=lambda x: x and "__doPostBack" in x):
-                 continue
-            continue
-        
-        # 2. Licitações válidas devem ter EXATAMENTE 6 colunas de dados.
         if len(cols) != 6:
             continue
-        
+            
         # --- EXTRAÇÃO DE DADOS ---
-        
         numero = cols[0].get_text(strip=True)
         ano = cols[1].get_text(strip=True)
         objeto = cols[2].get_text(strip=True)
@@ -472,18 +466,12 @@ def parse_sanesul_from_playwright_content(html, base_url="https://www.sanesul.ms
         link_mais_detalhes = cols[5].find("a", {"title": "Mais detalhes da Licitação!"})
 
         # --- FILTRO B: Validação de Dados Úteis ---
-        
-        # Um registro de licitação deve ter um link de detalhes
         if not link_mais_detalhes:
-             continue
-             
-        # O campo Número e Ano devem ser (ou começar com) dígitos
-        if not (numero.strip().isdigit() and ano.strip().isdigit()):
-            # Se for o caso de "1/2" em uma única célula ou outro lixo, ignora
-            # Se o filtro anterior de 'len(cols) != 6' falhar, este pega o lixo.
             continue
             
-        # Não extrai linhas que claramente são cabeçalhos ou totais
+        if not (numero.strip().isdigit() and ano.strip().isdigit()):
+            continue
+            
         if "Número" in numero or "Ano" in ano or "Total" in numero:
             continue 
 
@@ -495,20 +483,31 @@ def parse_sanesul_from_playwright_content(html, base_url="https://www.sanesul.ms
             "org": "Sanesul",
             "obj": objeto,
             "url": detalhes_url, 
-            "published": data_abertura,
+            # NOVO: O ano está na coluna 1, então podemos usar ele para validação
+            "published": f"{data_abertura} {ano}", # Inclui o ano no campo published para o filtro final
             "fuso_horario": fuso_horario
         })
+        
+        # NOVO: Atualiza o ano do último item válido
+        last_item_year = ano 
 
-    return items, None
+    # NOVO: Retorna a lista de itens E o ano do último item válido.
+    return items, last_item_year
+
 
 def fetch_sanesul_playwright(url, base_url="https://www.sanesul.ms.gov.br"):
     all_items = []
     
+    # 
+    # >>> NOVO: Extrair configurações de parada do dicionário SITES
+    #
+    site_config = next((s for s in SITES if s['name'] == 'Sanesul'), {})
+    date_threshold_str = str(site_config.get("date_threshold")) if site_config.get("date_threshold") else None
+    
     with sync_playwright() as p:
-        # Inicia o navegador (Chrome)
-        browser = p.chromium.launch(headless=True) # Use headless=False para debugar visualmente
+        # ... (código para iniciar browser e page)
+        browser = p.chromium.launch(headless=True)
         page = browser.new_page()
-        
         print(f"[PLAYWRIGHT] Navegando para a URL inicial: {url}")
         page.goto(url, timeout=60000)
 
@@ -521,23 +520,34 @@ def fetch_sanesul_playwright(url, base_url="https://www.sanesul.ms.gov.br"):
             html_content = page.content()
             
             # 2. Chamar o seu parser para extrair os dados desta página
-            # O parser deve retornar uma lista de itens e ignorar o link de próxima página.
-            items_da_pagina, _ = parse_sanesul_from_playwright_content(html_content, base_url)
+            # O parser agora retorna a lista de itens e o ano do ÚLTIMO item.
+            items_da_pagina, last_item_year = parse_sanesul_from_playwright_content(html_content, base_url)
             
+            #
+            # >>> NOVO: Lógica de Parada de Ano!
+            #
+            if date_threshold_str and last_item_year and last_item_year < date_threshold_str:
+                print(f"[PLAYWRIGHT] Condição de parada atingida. Último item é de {last_item_year}. Parando a paginação.")
+                
+                #
+                # >>> NOVO: Filtrar apenas os itens da página atual que são de 2025
+                #
+                items_2025_only = [
+                    item for item in items_da_pagina
+                    if item.get('published', '').strip().endswith(date_threshold_str) # Filtra pelo ano no campo 'published'
+                ]
+                all_items.extend(items_2025_only)
+                break 
+                
             if not items_da_pagina and current_page_num > 1:
-                # Se não houver itens em uma página que não é a primeira, consideramos o fim.
                 print(f"[PLAYWRIGHT] Nenhuma licitação encontrada na página {current_page_num}. Fim.")
                 break
-            
+                
             all_items.extend(items_da_pagina)
             
             # 3. Preparar a busca pelo link da próxima página
-            
-            # O valor exato do postback para a próxima página (Ex: 'Page$2', 'Page$3', etc.)
+            # ... (código para encontrar next_link_locator)
             target_postback_value = f"Page${current_page_num + 1}"
-
-            # Localizador robusto que busca o link com o valor de postback exato no atributo href
-            # Isso garante que estamos procurando o link certo para avançar.
             next_link_locator = page.locator(
                 f"a[href*='{target_postback_value}'][href*='gridLicitacao']"
             )
@@ -549,15 +559,10 @@ def fetch_sanesul_playwright(url, base_url="https://www.sanesul.ms.gov.br"):
                 
             try:
                 # 5. Clicar no link e esperar o recarregamento do conteúdo.
+                # ... (código para clicar e esperar)
                 print(f"[PLAYWRIGHT] Clicando no link da página {current_page_num + 1}...")
-                
-                # Clique síncrono
                 next_link_locator.click() 
-                
-                # *** ADICIONE ESTA LINHA ***
-                # Aguarda que a tabela principal 'conteudo_gridLicitacao' esteja visível no DOM
                 page.wait_for_selector("#conteudo_gridLicitacao", state="visible", timeout=10000)
-                
                 current_page_num += 1
 
             except Exception as e:
@@ -565,6 +570,16 @@ def fetch_sanesul_playwright(url, base_url="https://www.sanesul.ms.gov.br"):
                 break
 
         browser.close()
+    
+    #
+    # >>> NOVO: No final, se a parada não foi por ano, filtra o que sobrou.
+    #
+    if date_threshold_str:
+        all_items = [
+            item for item in all_items 
+            if item.get('published', '').strip().endswith(date_threshold_str)
+        ]
+        
     return all_items
 
 # SITES
