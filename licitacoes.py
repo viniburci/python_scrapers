@@ -432,24 +432,38 @@ def parse_fiems_tabela(html, base_url="https://compras.fiems.com.br"):
         
     return items
 
-def parse_sanesul(html, base_url="https://www.sanesul.ms.gov.br"):
-    """Parser para o site de Licitações da Sanesul."""
+
+def parse_sanesul_from_playwright_content(html, base_url="https://www.sanesul.ms.gov.br"):
+    """
+    Parser robusto para o HTML da Sanesul.
+    """
     soup = BeautifulSoup(html, "lxml")
     items = []
 
-    # Encontrando a tabela de licitações
     table = soup.find("table", {"id": "conteudo_gridLicitacao"})
     if not table:
-        print("[ERRO] Tabela de licitações não encontrada.")
-        return [], None
+        print("[ERRO PARSER] Tabela de licitações não encontrada no HTML.")
+        return items, None 
 
-    rows = table.find_all("tr")[1:]  # Ignorando o cabeçalho da tabela
+    rows = table.find_all("tr")[1:] 
+
     for row in rows:
         cols = row.find_all("td")
-        if len(cols) < 6:
-            continue  # Ignora linhas que não possuem células suficientes
-
-        # Extrair as colunas específicas
+        
+        # --- FILTRO A: Linha de Paginação / Sub-Tabela / Lixo ---
+        # 1. Linhas com apenas uma coluna são provavelmente a paginação ou subtítulos.
+        if len(cols) == 1:
+            # Garante que ignora a linha que contém o bloco de paginação
+            if cols[0].find("a", href=lambda x: x and "__doPostBack" in x):
+                 continue
+            continue
+        
+        # 2. Licitações válidas devem ter EXATAMENTE 6 colunas de dados.
+        if len(cols) != 6:
+            continue
+        
+        # --- EXTRAÇÃO DE DADOS ---
+        
         numero = cols[0].get_text(strip=True)
         ano = cols[1].get_text(strip=True)
         objeto = cols[2].get_text(strip=True)
@@ -457,83 +471,101 @@ def parse_sanesul(html, base_url="https://www.sanesul.ms.gov.br"):
         fuso_horario = cols[4].get_text(strip=True)
         link_mais_detalhes = cols[5].find("a", {"title": "Mais detalhes da Licitação!"})
 
-        # Ignorar itens de paginação (que geralmente contêm palavras como "Último", "Página", ou padrões como "1/2")
-        if any(phrase in numero for phrase in ["Último", "Página", "/"]):
-            continue  # Ignora se houver qualquer um desses termos no número da licitação
+        # --- FILTRO B: Validação de Dados Úteis ---
+        
+        # Um registro de licitação deve ter um link de detalhes
+        if not link_mais_detalhes:
+             continue
+             
+        # O campo Número e Ano devem ser (ou começar com) dígitos
+        if not (numero.strip().isdigit() and ano.strip().isdigit()):
+            # Se for o caso de "1/2" em uma única célula ou outro lixo, ignora
+            # Se o filtro anterior de 'len(cols) != 6' falhar, este pega o lixo.
+            continue
+            
+        # Não extrai linhas que claramente são cabeçalhos ou totais
+        if "Número" in numero or "Ano" in ano or "Total" in numero:
+            continue 
 
-        detalhes_url = None
-        if link_mais_detalhes:
-            detalhes_url = link_mais_detalhes.get("href")
-            detalhes_url = urllib.parse.urljoin(base_url, detalhes_url)
-
+        # --- ARMAZENAMENTO ---
+        detalhes_url = link_mais_detalhes.get("href")
+            
         items.append({
             "title": f"Licitação {numero}/{ano}",
             "org": "Sanesul",
             "obj": objeto,
-            "url": detalhes_url,
+            "url": detalhes_url, 
             "published": data_abertura,
             "fuso_horario": fuso_horario
         })
 
-    # Agora, procurar o link para a próxima página
-    pagination = soup.find("tr", {"class": "pagination"})
-    next_page_url = None
-    if pagination:
-        # Encontrar todos os links para as páginas
-        page_links = pagination.find_all("a", href=True)
-        
-        # Tentar identificar a próxima página com base no conteúdo de 'Page$X'
-        for link in page_links:
-            href = link["href"]
-            if 'Page$' in href and 'Último' not in href:  # Ignora 'Último' e pega o próximo número de página
-                next_page_url = base_url + '?' + href.split('=')[-1]  # Extrai a URL da próxima página
+    return items, None
 
-    return items, next_page_url
-
-def fetch_sanesul_page(url):
-    """Função para buscar a página HTML e retornar o conteúdo."""
-    headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"
-    }
-    response = requests.get(url, headers=headers)
-    if response.status_code == 200:
-        return response.text
-    else:
-        print(f"[ERRO] Falha ao buscar página: {response.status_code}")
-        return None
-
-def fetch_all_sanesul_licitacoes(base_url="https://www.sanesul.ms.gov.br/licitacao/tipolicitacao/licitacao"):
-    """Função para buscar todas as licitações, incluindo navegação entre páginas."""
+def fetch_sanesul_playwright(url, base_url="https://www.sanesul.ms.gov.br"):
     all_items = []
-    next_page_url = base_url
+    
+    with sync_playwright() as p:
+        # Inicia o navegador (Chrome)
+        browser = p.chromium.launch(headless=True) # Use headless=False para debugar visualmente
+        page = browser.new_page()
+        
+        print(f"[PLAYWRIGHT] Navegando para a URL inicial: {url}")
+        page.goto(url, timeout=60000)
 
-    while next_page_url:
-        print(f"[INFO] Buscando página: {next_page_url}")
+        current_page_num = 1
         
-        # Buscar o HTML da página atual
-        html = fetch_sanesul_page(next_page_url)
-        if not html:
-            print("[ERRO] Não foi possível carregar a página.")
-            break
-        
-        # Parse da página atual
-        items, next_page_url = parse_sanesul(html, base_url)
-        
-        # Se não houver itens ou próxima página, interromper
-        if not items:
-            print("[INFO] Nenhuma licitação encontrada ou fim das páginas.")
-            break
-        
-        # Adiciona os itens da página atual à lista total
-        all_items.extend(items)
+        while True:
+            print(f"[PLAYWRIGHT] Processando Página {current_page_num}...")
+            
+            # 1. Obter o conteúdo HTML da página atual
+            html_content = page.content()
+            
+            # 2. Chamar o seu parser para extrair os dados desta página
+            # O parser deve retornar uma lista de itens e ignorar o link de próxima página.
+            items_da_pagina, _ = parse_sanesul_from_playwright_content(html_content, base_url)
+            
+            if not items_da_pagina and current_page_num > 1:
+                # Se não houver itens em uma página que não é a primeira, consideramos o fim.
+                print(f"[PLAYWRIGHT] Nenhuma licitação encontrada na página {current_page_num}. Fim.")
+                break
+            
+            all_items.extend(items_da_pagina)
+            
+            # 3. Preparar a busca pelo link da próxima página
+            
+            # O valor exato do postback para a próxima página (Ex: 'Page$2', 'Page$3', etc.)
+            target_postback_value = f"Page${current_page_num + 1}"
 
-        # Se próxima página não existir, o loop será interrompido
-        if not next_page_url:
-            print("[INFO] Não há mais páginas para buscar.")
-            break
+            # Localizador robusto que busca o link com o valor de postback exato no atributo href
+            # Isso garante que estamos procurando o link certo para avançar.
+            next_link_locator = page.locator(
+                f"a[href*='{target_postback_value}'][href*='gridLicitacao']"
+            )
 
+            # 4. Verifique se o link da próxima página existe e é visível/clicável
+            if not next_link_locator.is_visible():
+                print("[PLAYWRIGHT] Fim da paginação. Link da próxima página (PostBack) não encontrado.")
+                break
+                
+            try:
+                # 5. Clicar no link e esperar o recarregamento do conteúdo.
+                print(f"[PLAYWRIGHT] Clicando no link da página {current_page_num + 1}...")
+                
+                # Clique síncrono
+                next_link_locator.click() 
+                
+                # *** ADICIONE ESTA LINHA ***
+                # Aguarda que a tabela principal 'conteudo_gridLicitacao' esteja visível no DOM
+                page.wait_for_selector("#conteudo_gridLicitacao", state="visible", timeout=10000)
+                
+                current_page_num += 1
+
+            except Exception as e:
+                print(f"[ERRO PLAYWRIGHT] Falha ao clicar no link da página {current_page_num + 1}: {e}")
+                break
+
+        browser.close()
     return all_items
-
 
 # SITES
 SITES = [
@@ -552,7 +584,7 @@ SITES = [
     #{"name": "BNC", "url": "https://bnccompras.com/Process/ProcessSearchPublic?param1=0", "parser": parse_bnc, "dynamic": True, "base": "https://bnccompras.com/Process/ProcessSearchPublic?param1=0"},
     {"name": "Sanesul", 
      "url": "https://www.sanesul.ms.gov.br/licitacao/tipolicitacao/licitacao", 
-     "parser": parse_sanesul, 
+     "parser": parse_sanesul_from_playwright_content, 
      "dynamic": False,
      "base": "https://www.sanesul.ms.gov.br",
      "stop_selector": "table#conteudo_gridLicitacao tr td:nth-child(4)", 
@@ -569,12 +601,14 @@ def main_loop():
                 
                 # --- TRATAMENTO ESPECIAL PARA SANESUL (PAGINAÇÃO ESTÁTICA) ---
                 if site['name'] == 'Sanesul':
-                    print(f"[INFO] Buscando site: {site['name']} (Paginação Estática)")
-                    # Chama a função que gerencia toda a paginação
-                    items = fetch_all_sanesul_licitacoes(site['url'])
+                    print(f"[INFO] Buscando site: {site['name']} (Paginação via Playwright)")
+    
+                    # CHAMA A NOVA FUNÇÃO DE FETCH COM PLAYWRIGHT
+                    items = fetch_sanesul_playwright(site['url'], site['base'])
+    
                     print(f"[INFO] {len(items)} itens encontrados em {site['name']}")
-                    
-                    # Prossiga para o processamento de novos itens
+    
+                    # Prossiga para o processamento de novos itens (RESTANTE DO CÓDIGO PERMANECE IGUAL)
                     new_count = 0
                     for item in items:
                         is_new, _ = is_new_and_save(item)
@@ -585,7 +619,7 @@ def main_loop():
                             print(f"[ALERTA] Novo item [{site['name']}]: {item['title']}", "Enviado" if ok else f"Erro: {resp}")
                     
                     print(f"[INFO] {new_count} novos alertas enviados para {site['name']}")
-                    continue # Pula para o próximo site
+                    continue # Pula para o próximo site                
 
                 # --- FLUXO PADRÃO (Dinâmico ou Estático de página única) ---
                 try:
