@@ -582,6 +582,153 @@ def fetch_sanesul_playwright(url, base_url="https://www.sanesul.ms.gov.br"):
         
     return all_items
 
+
+def fetch_casan_form(url="https://www.casan.com.br/licitacoes/editais"):
+    """
+    Busca os dados de licitações da CASAN interagindo com o formulário SELECT/Pesquisar,
+    com foco na condição de espera pelo carregamento dos resultados.
+    """
+    
+    anos_desejados = ["2025"]
+    html_combinado = ""
+    
+    SELECT_ANO_SELECTOR = '#licitacao_ano'
+    BUTTON_PESQUISAR_SELECTOR = '#btnBuscar'
+    RESULT_CONTAINER_SELECTOR = '.editais-visualiza-container'
+    
+    # Seletor de uma linha de resultado dentro do container
+    RESULT_ITEM_SELECTOR = f'{RESULT_CONTAINER_SELECTOR} table.table-bordered' 
+
+    try:
+        with sync_playwright() as p:
+            browser = p.chromium.launch()
+            page = browser.new_page()
+            
+            print(f"[INFO] Navegando para {url} e interagindo com o formulário...")
+            page.goto(url, wait_until="networkidle", timeout=60000) 
+            
+            for ano in anos_desejados:
+                print(f"[INFO] Selecionando ano: {ano}...")
+                
+                # 1. Seleciona o valor no dropdown
+                page.select_option(SELECT_ANO_SELECTOR, value=ano)
+                
+                # 2. Clica no botão 'Pesquisar'
+                print(f"[INFO] Clicando em 'Pesquisar' para o ano {ano}...")
+                page.click(BUTTON_PESQUISAR_SELECTOR)
+                
+                # 3. GARANTIA DE ESPERA:
+                # Tentativa A: Esperar pela mensagem de quantidade, ou que uma tabela apareça.
+                try:
+                    # Espera que o container tenha resultados (mensagem "Quantidade:")
+                    # ou uma tabela de licitação (se não houver resultados, espera apenas 5s)
+                    page.wait_for_selector(
+                        f'{RESULT_CONTAINER_SELECTOR}:has-text("Quantidade:") , {RESULT_ITEM_SELECTOR}',
+                        timeout=15000 # Tempo de espera reduzido para 15s (mais rápido que 30s default)
+                    )
+                except Exception:
+                    # Se não aparecer nada em 15s, assumimos que não há resultados (0 itens) e continuamos
+                    print(f"[INFO] Nenhum resultado carregado para o ano {ano}. Prosseguindo...")
+                
+                
+                # 4. Coleta o HTML da div de resultados
+                # Se o seletor falhar aqui, indica que o elemento não foi encontrado
+                html_parte = page.inner_html(RESULT_CONTAINER_SELECTOR)
+                html_combinado += html_parte
+                
+            browser.close()
+            return html_combinado
+            
+    except Exception as e:
+        print(f"[ERRO] Falha na interação dinâmica da CASAN: {e}")
+        try:
+            if 'browser' in locals() and browser:
+                 browser.close()
+        except:
+            pass
+        return None
+
+
+def parse_casan_list(html, base_url="https://www.casan.com.br"):
+    """
+    Parser adaptado para o HTML retornado pelo fetch_casan_form ou fetch_casan_ajax.
+    Busca todas as tabelas de licitação (combinando os anos 2025 e 2024, se aplicável).
+    """
+    if not html:
+        return []
+        
+    soup = BeautifulSoup(html, "lxml")
+    items = []
+    
+    licitacao_tables = soup.select("table.table-bordered") 
+    
+    # 2. Iterar sobre cada tabela que representa uma licitação
+    for table in licitacao_tables:
+        try:
+            # Inicializa as variáveis para cada item
+            modalidade = ""
+            titulo_edital = ""
+            objeto = ""
+            data_abertura = ""
+            url_arquivos = ""
+
+            # --- 1. Extração de Modalidade e Edital para o Título ---
+            # CORREÇÃO: Usando 'string='
+            modalidade_row = table.find("td", string=lambda t: t and "Modalidade:" in t)
+            if modalidade_row:
+                modalidade = modalidade_row.find_next_sibling("td").get_text(strip=True)
+            
+            # CORREÇÃO: Usando 'string='
+            edital_row = table.find("td", string=lambda t: t and "Edital:" in t)
+            if edital_row:
+                titulo_edital = edital_row.find_next_sibling("td").get_text(strip=True)
+                # Combine Modalidade e Edital para um título mais completo
+                title = f"[{modalidade}] {titulo_edital}"
+            else:
+                # Se não encontrar o Edital, usa Modalidade como título
+                title = modalidade if modalidade else "Licitação (Sem Título)"
+            
+            # --- 2. Extração da Data de Abertura (para Published) ---
+            # CORREÇÃO: Usando 'string='
+            # Busca a data de abertura das propostas ou a data de disputa
+            data_row = table.find("td", string=lambda t: t and ("Abertura das propostas:" in t or "Disputa de preços:" in t))
+            if data_row:
+                # O texto deve ser extraído do <b> dentro da próxima <td>
+                data_abertura = data_row.find_next_sibling("td").find('b').get_text(strip=True)
+            
+            # --- 3. Extração do Objeto (Descrição) ---
+            # CORREÇÃO: Usando 'string='
+            objeto_row = table.find("td", string=lambda t: t and "Objeto:" in t)
+            if objeto_row:
+                objeto_td = objeto_row.find_next_sibling("td")
+                objeto = objeto_td.get_text(strip=True)
+                # O Objeto está bagunçado, vamos limpá-lo, removendo a referência ao Licitações-e
+                if 'Licitações-e' in objeto:
+                     objeto = objeto.split("Licitações-e:")[0].strip()
+            
+            # --- 4. Extração do URL para os Arquivos ---
+            link_tag = table.select_one('a.btn_arquivos[href*="/licitacoes/editais-arquivos/licitacao_id/"]')
+            if link_tag:
+                url_arquivos = urllib.parse.urljoin(base_url, link_tag.get("href"))
+            
+            # Adiciona o item se encontrarmos um link de arquivos (indicativo de licitação válida)
+            if url_arquivos:
+                items.append({
+                    "title": title, 
+                    "org": "CASAN", 
+                    "obj": objeto, 
+                    "url": url_arquivos, 
+                    "published": data_abertura 
+                })
+
+        except Exception as e:
+            # Em caso de erro de parse, logamos e ignoramos a tabela
+            print(f"[ERRO] Falha ao processar tabela da CASAN: {e}")
+            continue
+            
+    return items
+    
+
 # SITES
 SITES = [
     #{"name": "FIEP", "url": "https://portaldecompras.sistemafiep.org.br", "parser": parse_fiep, "base": "https://portaldecompras.sistemafiep.org.br"},
@@ -597,93 +744,99 @@ SITES = [
     #},
     #{"name": "Licitacoes-e", "url": "https://www.licitacoes-e.com.br/aop/index.jsp?codSite=39763", "parser": parse_div_list, "dynamic": True, "base": "https://www.licitacoes-e.com.br"},
     #{"name": "BNC", "url": "https://bnccompras.com/Process/ProcessSearchPublic?param1=0", "parser": parse_bnc, "dynamic": True, "base": "https://bnccompras.com/Process/ProcessSearchPublic?param1=0"},
-    {"name": "Sanesul", 
-     "url": "https://www.sanesul.ms.gov.br/licitacao/tipolicitacao/licitacao", 
-     "parser": parse_sanesul_from_playwright_content, 
-     "dynamic": False,
-     "base": "https://www.sanesul.ms.gov.br",
-     "stop_selector": "table#conteudo_gridLicitacao tr td:nth-child(4)", 
-     "date_threshold": 2025},
-    #{"name": "Casan", "url": "https://www.casan.com.br/menu-conteudo/index/url/licitacoes-em-andamento#0", "parser": parse_div_list, "dynamic": True, "base": "https://www.casan.com.br"},
+    #{"name": "Sanesul", 
+    # "url": "https://www.sanesul.ms.gov.br/licitacao/tipolicitacao/licitacao", 
+    # "parser": parse_sanesul_from_playwright_content, 
+    #"dynamic": False,
+    # "base": "https://www.sanesul.ms.gov.br",
+    # "stop_selector": "table#conteudo_gridLicitacao tr td:nth-child(4)", 
+    # "date_threshold": 2025},
+    {"name": "Casan", 
+     "url": "https://www.casan.com.br/licitacoes/editais", 
+     "parser": parse_casan_list, 
+     "dynamic": True, # Define como dinâmico para usar a lógica de fetchers customizados/Playwright
+     "base": "https://www.casan.com.br",
+     "fetcher": fetch_casan_form 
+    },
 ]
 
 # LOOP PRINCIPAL
-# LOOP PRINCIPAL
 def main_loop():
+    # Loop infinito que mantém o scraper rodando
     while True:
         try:
+            # Itera sobre a lista de sites configurados
             for site in SITES:
                 
-                # --- TRATAMENTO ESPECIAL PARA SANESUL (PAGINAÇÃO ESTÁTICA) ---
+                # --- TRATAMENTO ESPECIAL PARA SANESUL ---
                 if site['name'] == 'Sanesul':
-                    print(f"[INFO] Buscando site: {site['name']} (Paginação via Playwright)")
-    
-                    # CHAMA A NOVA FUNÇÃO DE FETCH COM PLAYWRIGHT
-                    items = fetch_sanesul_playwright(site['url'], site['base'])
-    
-                    print(f"[INFO] {len(items)} itens encontrados em {site['name']}")
-    
-                    # Prossiga para o processamento de novos itens (RESTANTE DO CÓDIGO PERMANECE IGUAL)
-                    new_count = 0
-                    for item in items:
-                        is_new, _ = is_new_and_save(item)
-                        if is_new:
-                            new_count += 1
-                            msg = format_item_message(item)
-                            ok, resp = send_telegram_message(msg)
-                            print(f"[ALERTA] Novo item [{site['name']}]: {item['title']}", "Enviado" if ok else f"Erro: {resp}")
-                    
-                    print(f"[INFO] {new_count} novos alertas enviados para {site['name']}")
-                    continue # Pula para o próximo site                
-
-                # --- FLUXO PADRÃO (Dinâmico ou Estático de página única) ---
+                    print(f"[INFO] Ignorando Sanesul (Tratamento especial/separado)...")
+                    # Chame aqui sua função específica para a Sanesul, se necessário.
+                    # process_sanesul(site) 
+                    continue 
+                
+                # --- INÍCIO DO FLUXO POR SITE (TRY INTERNO) ---
                 try:
-                    print(f"[INFO] Buscando site: {site['name']} ({site['url']})")
+                    print(f"\n[INFO] Buscando site: {site['name']} ({site['url']})")
                     
-                    if site.get("dynamic"):
-                        # ... lógica original do fetch_dynamic_scroll ...
+                    html = None
+                    
+                    # 1. FLUXO DE FETCHER CUSTOMIZADO (USADO AGORA PELA CASAN - fetch_casan_form)
+                    if site.get("fetcher"):
+                        # Chama o fetcher customizado, passando a URL como argumento
+                        html = site["fetcher"](url=site["url"])
+                        
+                    # 2. FLUXO DINÂMICO (Playwright genérico com Scroll)
+                    elif site.get("dynamic"):
                         stop_sel = site.get("stop_selector")
                         date_thres = site.get("date_threshold")
                         
+                        # A função fetch_dynamic_scroll deve estar definida e usar o Playwright
                         html = fetch_dynamic_scroll(
                             site["url"], 
                             stop_selector=stop_sel, 
                             date_threshold=date_thres
                         )
-                        items = site["parser"](html, base_url=site.get("base"))
+                        
+                    # 3. FLUXO ESTÁTICO (requests.get simples)
                     else:
                         response = requests.get(site["url"], timeout=30)
-                        response.raise_for_status()
+                        response.raise_for_status() # Lança exceção em caso de erro HTTP
                         html = response.text
+
+                    # --- Processamento Comum ---
+                    items = []
+                    if html:
                         items = site["parser"](html, base_url=site.get("base"))
 
                     print(f"[INFO] {len(items)} itens encontrados em {site['name']}")
                     
+                    # --- Lógica de Alerta e Persistência ---
                     new_count = 0
                     for item in items:
-                        is_new, _ = is_new_and_save(item)
+                        is_new, _ = is_new_and_save(item) # Salva no banco/cache
                         if is_new:
                             new_count += 1
                             msg = format_item_message(item)
                             ok, resp = send_telegram_message(msg)
-                            print(f"[ALERTA] Novo item [{site['name']}]: {item['title']}", "Enviado" if ok else f"Erro: {resp}")
+                            print(f"[ALERTA] Novo item [{site['name']}]: {item['title']}", 
+                                  "-> Enviado!" if ok else f"-> ERRO TELEGRAM: {resp}")
                     
                     print(f"[INFO] {new_count} novos alertas enviados para {site['name']}")
 
+                # CLÁUSULAS DE EXCEÇÃO DO BLOCO INTERNO (por site)
                 except requests.exceptions.RequestException as e:
-                    print(f"[ERRO] Falha de requisição no site {site['name']}: {e}")
+                    print(f"[ERRO] Falha de requisição no site {site['name']} (HTTP/Rede): {e}")
                 except Exception as e:
-                    print(f"[ERRO] Site {site['name']}: {e}")
-            
-            print(f"[INFO] Dormindo {CHECK_INTERVAL_SECONDS} segundos...\n")
-            time.sleep(CHECK_INTERVAL_SECONDS)
+                    print(f"[ERRO] Site {site['name']} falhou no processamento (Parsing/Outro): {e}")
         
-        except KeyboardInterrupt:
-            print("Parando scraper...")
-            break
-        except Exception as e:
-            print(f"[ERRO CRÍTICO] Falha no loop principal: {e}")
-            time.sleep(60)
+        except Exception as loop_error:
+            print(f"[ERRO GRAVE] Falha no loop principal de sites: {loop_error}")
+            
+        # --- Tempo de Espera ---
+        sleep_time = 15
+        print(f"[INFO] Dormindo {sleep_time} segundos...")
+        time.sleep(sleep_time)
 
 if __name__ == "__main__":
     main_loop()
