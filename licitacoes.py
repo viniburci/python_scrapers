@@ -7,6 +7,7 @@ import re
 from bs4 import BeautifulSoup
 from playwright.sync_api import sync_playwright
 import psycopg2
+from playwright.async_api import async_playwright
 
 # CONFIGURAÇÃO - PostgreSQL
 PG_HOST = "localhost"
@@ -207,59 +208,114 @@ def fetch_dynamic_scroll(url, wait_selector="table, div", stop_selector=None, da
         browser.close()
         return html
 
-# PARSERS GENÉRICOS (Mantidos, mas não usados nos sites FIESC/FIEMS/FIEP)
-def parse_generic_table(html, base_url=None):
-    soup = BeautifulSoup(html, "lxml")
-    items = []
-    for tr in soup.select("table tbody tr"):
-        cols = tr.find_all("td")
-        if len(cols) < 1:
-            continue
-        title_el = cols[0].select_one("a")
-        title = title_el.get_text(strip=True) if title_el else cols[0].get_text(strip=True)
-        url = title_el.get("href") if title_el else None
-        if url and isinstance(url, str) and url.startswith("/") and base_url:
-            url = urllib.parse.urljoin(base_url, url)
-        org = cols[1].get_text(strip=True) if len(cols) > 1 else ""
-        date = cols[2].get_text(strip=True) if len(cols) > 2 else ""
-        items.append({"title": title, "org": org, "url": url, "published": date})
-    return items
-
-def parse_div_list(html, base_url=None, row_selector="div.licitacao-row"):
-    soup = BeautifulSoup(html, "lxml")
-    items = []
-    for div in soup.select(row_selector):
-        title_el = div.select_one("a, .title")
-        title = title_el.get_text(strip=True) if title_el else ""
-        url = title_el.get("href") if title_el else None
-        if url and isinstance(url, str) and url.startswith("/") and base_url:
-            url = urllib.parse.urljoin(base_url, url)
-        org_el = div.select_one(".org")
-        date_el = div.select_one(".date")
-        org = org_el.get_text(strip=True) if org_el else ""
-        date = date_el.get_text(strip=True) if date_el else ""
-        items.append({"title": title, "org": org, "url": url, "published": date})
-    return items
 
 # --- PARSERS ESPECÍFICOS ---
 
-def parse_fiep(html, base_url="https://portaldecompras.sistemafiep.org.br"):
-    """Parser para o Portal de Compras da FIEP."""
+def fetch_fiep_sync(url, **kwargs):
+    """
+    Função síncrona que usa Playwright para buscar o conteúdo dinâmico.
+    """
+    print(f"[FETCH] Usando Playwright (síncrono) para carregar: {url}")
+    
+    html_content = None
+    try:
+        with sync_playwright() as p:
+            browser = p.chromium.launch()
+            page = browser.new_page()
+            
+            page.goto(url, wait_until="networkidle") # Espera a rede estabilizar
+            
+            # Espera até que a lista de licitações apareça (seletor principal)
+            page.wait_for_selector(".tab-noticias article.edital", timeout=20000)
+            
+            # Extrai o HTML do contêiner que segura as licitações
+            html_content = page.inner_html("#licitacoes-list")
+            
+            browser.close()
+            
+    except Exception as e:
+        print(f"[ERRO PLAYWRIGHT] Falha ao buscar conteúdo dinâmico: {e}")
+        html_content = None
+        
+    return html_content
+
+def fetch_static(url, **kwargs):
+    """
+    Função síncrona para requisições estáticas (simples requests).
+    """
+    print(f"[FETCH] Usando requests (estático) para buscar: {url}")
+    response = requests.get(url, timeout=30)
+    response.raise_for_status()
+    return response.text
+
+# --- 3. FUNÇÕES DE PARSING ---
+
+def parse_fiep(html, base_url=""):
+    """
+    Parser para o Portal de Compras da FIEP, corrigido e robusto.
+    """
     soup = BeautifulSoup(html, "lxml")
     items = []
+    
     for artigo in soup.select("article.edital"):
+        
+        # Inicialização das variáveis
+        title = "Sem modalidade"
+        org = ""
+        date = ""
+        objeto = None
+        url = None 
+        lic_id = None
+        
+        # 1. Extração do Título (Modalidade)
         h3 = artigo.select_one("h3")
-        title = h3.get_text(strip=True) if h3 else "Sem título"
-        empresa_div = artigo.select_one("div.empresas")
+        title = h3.get_text(strip=True) if h3 else title
+        
+        # 2. Extração do Órgão (SESI/SENAI)
+        empresa_div = artigo.select_one("div.header div.empresas")
         org = empresa_div.get_text(strip=True) if empresa_div else ""
-        if not org:
-            p_empresa = artigo.find("p", string=lambda x: x and "Empresa Contratante" in x)
-            org = p_empresa.get_text(strip=True).replace("Empresa Contratante:", "").strip() if p_empresa else ""
+                 
+        # 3. Extração da Data (Data da abertura da proposta)
         p_data = artigo.find("p", string=lambda x: x and "Data da abertura da proposta:" in x)
-        date = p_data.get_text(strip=True).replace("Data da abertura da proposta:", "").strip() if p_data else ""
-        link_el = artigo.select_one("ul.documentos li a[href]")
-        url = urllib.parse.urljoin(base_url, link_el.get("href")) if link_el else None
-        items.append({"title": title, "org": org, "url": url, "published": date})
+        if p_data:
+            date = p_data.get_text(strip=True).replace("Data da abertura da proposta:", "").strip()
+
+        # 4. Extração do Objeto (Descrição Longa)
+        # Busca o último <p> que não seja Status, Data ou Empresa Contratante
+        paragrafos_dados = artigo.select("div.dados > p.body")
+        for p in reversed(paragrafos_dados):
+            p_text = p.get_text(strip=True)
+            if 'Status:' in p_text or 'Data da abertura da proposta:' in p_text or 'Empresa Contratante' in p_text or not p_text:
+                continue
+            if len(p_text) > 10: 
+                objeto = p_text
+                break
+            
+        # 5. Extração da URL (Link do Edital/Documento Principal)
+        link_el = artigo.select_one("ul.documentos li strong:contains('Edital') + ul a[href]")
+        if not link_el:
+            link_el = artigo.select_one("ul.documentos li strong:contains('CHAMAMENTO PÚBLICO') + ul a[href]")
+        
+        if link_el:
+            url = urllib.parse.urljoin(base_url, link_el.get("href"))
+            
+        # 6. Geração do ID e Adição do Item
+        if url: 
+            numero_el = artigo.select_one("div.header div.numero")
+            lic_id_full_text = numero_el.get_text(strip=True) if numero_el else url
+            
+            # Extrai o número da licitação
+            lic_id = lic_id_full_text.split('|')[1].strip() if '|' in lic_id_full_text else lic_id_full_text
+            
+            items.append({
+                "id": lic_id, 
+                "title": title, 
+                "org": org, 
+                "url": url, 
+                "published": date,
+                "obj": objeto 
+            })
+            
     return items
 
 def parse_fiesc_tabela(html, base_url="https://portaldecompras.fiesc.com.br"):
@@ -731,7 +787,13 @@ def parse_casan_list(html, base_url="https://www.casan.com.br"):
 
 # SITES
 SITES = [
-    #{"name": "FIEP", "url": "https://portaldecompras.sistemafiep.org.br", "parser": parse_fiep, "base": "https://portaldecompras.sistemafiep.org.br"},
+    {"name": "FIEP", 
+     "url": "https://portaldecompras.sistemafiep.org.br", 
+     "parser": parse_fiep, 
+     "base": "https://portaldecompras.sistemafiep.org.br", 
+     "dynamic": True, 
+     "fetcher": fetch_fiep_sync
+     },
     #{"name": "FIESC", "url": "https://portaldecompras.fiesc.com.br/Portal/Mural.aspx", "parser": parse_fiesc_tabela, "dynamic": True, "base": "https://portaldecompras.fiesc.com.br"},
     #{"name": "FIEMS", 
     # "url": "https://compras.fiems.com.br/portal/Mural.aspx?nNmTela=E", 
@@ -751,13 +813,13 @@ SITES = [
     # "base": "https://www.sanesul.ms.gov.br",
     # "stop_selector": "table#conteudo_gridLicitacao tr td:nth-child(4)", 
     # "date_threshold": 2025},
-    {"name": "Casan", 
-     "url": "https://www.casan.com.br/licitacoes/editais", 
-     "parser": parse_casan_list, 
-     "dynamic": True, # Define como dinâmico para usar a lógica de fetchers customizados/Playwright
-     "base": "https://www.casan.com.br",
-     "fetcher": fetch_casan_form 
-    },
+    #{"name": "Casan", 
+    # "url": "https://www.casan.com.br/licitacoes/editais", 
+    # "parser": parse_casan_list, 
+    # "dynamic": True, # Define como dinâmico para usar a lógica de fetchers customizados/Playwright
+    # "base": "https://www.casan.com.br",
+    # "fetcher": fetch_casan_form 
+    #},
 ]
 
 # LOOP PRINCIPAL
@@ -771,7 +833,6 @@ def main_loop():
                 # --- TRATAMENTO ESPECIAL PARA SANESUL ---
                 if site['name'] == 'Sanesul':
                     print(f"[INFO] Ignorando Sanesul (Tratamento especial/separado)...")
-                    # Chame aqui sua função específica para a Sanesul, se necessário.
                     # process_sanesul(site) 
                     continue 
                 
@@ -781,24 +842,42 @@ def main_loop():
                     
                     html = None
                     
-                    # 1. FLUXO DE FETCHER CUSTOMIZADO (USADO AGORA PELA CASAN - fetch_casan_form)
-                    if site.get("fetcher"):
-                        # Chama o fetcher customizado, passando a URL como argumento
+                    # 1. FLUXO DE FETCHER CUSTOMIZADO (Ex: CASAN)
+                    if site.get("fetcher") and site['name'] != 'FIEP': # FIEP tem lógica customizada no bloco abaixo
+                        # Assume que site["fetcher"] é uma função já importada e síncrona
                         html = site["fetcher"](url=site["url"])
-                        
-                    # 2. FLUXO DINÂMICO (Playwright genérico com Scroll)
+                    
+                    # 2. FLUXO EXCLUSIVO PARA FIEP (Playwright Síncrono Inline)
+                    elif site['name'] == 'FIEP':
+                        print("[FETCH] Usando Playwright (síncrono) INLINE para carregar FIEP.")
+                        try:
+                            with sync_playwright() as p:
+                                browser = p.chromium.launch()
+                                page = browser.new_page()
+                                
+                                page.goto(site["url"], wait_until="networkidle") 
+                                page.wait_for_selector(".tab-noticias article.edital", timeout=20000)
+                                page.wait_for_timeout(2000) # Buffer
+                                html = page.inner_html("#licitacoes-list")
+                                browser.close()
+                                
+                        except Exception as e:
+                            print(f"[ERRO PLAYWRIGHT/FIEP] Falha ao buscar conteúdo: {e}")
+                            html = None
+                    
+                    # 3. FLUXO DINÂMICO (Playwright genérico com Scroll - fetch_dynamic_scroll)
                     elif site.get("dynamic"):
                         stop_sel = site.get("stop_selector")
                         date_thres = site.get("date_threshold")
                         
-                        # A função fetch_dynamic_scroll deve estar definida e usar o Playwright
+                        # A função fetch_dynamic_scroll (deve ser síncrona)
                         html = fetch_dynamic_scroll(
                             site["url"], 
                             stop_selector=stop_sel, 
                             date_threshold=date_thres
                         )
                         
-                    # 3. FLUXO ESTÁTICO (requests.get simples)
+                    # 4. FLUXO ESTÁTICO (requests.get simples)
                     else:
                         response = requests.get(site["url"], timeout=30)
                         response.raise_for_status() # Lança exceção em caso de erro HTTP
@@ -807,6 +886,7 @@ def main_loop():
                     # --- Processamento Comum ---
                     items = []
                     if html:
+                        # Assumindo que site["parser"] é uma função importada
                         items = site["parser"](html, base_url=site.get("base"))
 
                     print(f"[INFO] {len(items)} itens encontrados em {site['name']}")
@@ -820,8 +900,8 @@ def main_loop():
                             msg = format_item_message(item)
                             ok, resp = send_telegram_message(msg)
                             print(f"[ALERTA] Novo item [{site['name']}]: {item['title']}", 
-                                  "-> Enviado!" if ok else f"-> ERRO TELEGRAM: {resp}")
-                    
+                                    "-> Enviado!" if ok else f"-> ERRO TELEGRAM: {resp}")
+                            
                     print(f"[INFO] {new_count} novos alertas enviados para {site['name']}")
 
                 # CLÁUSULAS DE EXCEÇÃO DO BLOCO INTERNO (por site)
