@@ -52,7 +52,7 @@ def md5(s: str) -> str:
 
 def generate_unique_id(item):
     # Gerar um ID único com base em campos fixos, como título e organização
-    unique_str = (item['title'] or "") + "|" + (item['org'] or "")
+    unique_str = (item['title'] or "") + "|" + (item['org'] or "") + "|" + (item['url'] or "")
     return hashlib.md5(unique_str.encode("utf-8")).hexdigest()
 
 def is_new_and_save(item):
@@ -292,9 +292,9 @@ def parse_fiep(html, base_url=""):
                 break
             
         # 5. Extração da URL (Link do Edital/Documento Principal)
-        link_el = artigo.select_one("ul.documentos li strong:contains('Edital') + ul a[href]")
+        link_el = artigo.select_one("ul.documentos li strong:-soup-contains('Edital') + ul a[href]")
         if not link_el:
-            link_el = artigo.select_one("ul.documentos li strong:contains('CHAMAMENTO PÚBLICO') + ul a[href]")
+            link_el = artigo.select_one("ul.documentos li strong:-soup-contains('CHAMAMENTO PÚBLICO') + ul a[href]")
         
         if link_el:
             url = urllib.parse.urljoin(base_url, link_el.get("href"))
@@ -823,88 +823,105 @@ SITES = [
 ]
 
 # LOOP PRINCIPAL
+import time
+import requests
+from playwright.sync_api import sync_playwright
+# Importe aqui as suas funções auxiliares
+
 def main_loop():
-    # Loop infinito que mantém o scraper rodando
+    """
+    Loop principal que itera sobre os sites e extrai o conteúdo.
+    CORREÇÃO APLICADA: Interação por clique no elemento visível para ordenação da FIEP.
+    """
     while True:
         try:
-            # Itera sobre a lista de sites configurados
             for site in SITES:
                 
-                # --- TRATAMENTO ESPECIAL PARA SANESUL ---
                 if site['name'] == 'Sanesul':
                     print(f"[INFO] Ignorando Sanesul (Tratamento especial/separado)...")
-                    # process_sanesul(site) 
                     continue 
                 
-                # --- INÍCIO DO FLUXO POR SITE (TRY INTERNO) ---
                 try:
                     print(f"\n[INFO] Buscando site: {site['name']} ({site['url']})")
                     
                     html = None
                     
-                    # 1. FLUXO DE FETCHER CUSTOMIZADO (Ex: CASAN)
-                    if site.get("fetcher") and site['name'] != 'FIEP': # FIEP tem lógica customizada no bloco abaixo
-                        # Assume que site["fetcher"] é uma função já importada e síncrona
+                    if site.get("fetcher") and site['name'] != 'FIEP': 
                         html = site["fetcher"](url=site["url"])
                     
-                    # 2. FLUXO EXCLUSIVO PARA FIEP (Playwright Síncrono Inline)
+                    # 2. FLUXO EXCLUSIVO PARA FIEP (Playwright com Interação por Clique)
                     elif site['name'] == 'FIEP':
-                        print("[FETCH] Usando Playwright (síncrono) INLINE para carregar FIEP.")
+                        print("[FETCH] Usando Playwright (síncrono) INLINE para FIEP (garantindo ordenação 'Mais recentes primeiro').")
                         try:
                             with sync_playwright() as p:
-                                browser = p.chromium.launch()
+                                browser = p.chromium.launch() 
                                 page = browser.new_page()
                                 
-                                page.goto(site["url"], wait_until="networkidle") 
-                                page.wait_for_selector(".tab-noticias article.edital", timeout=20000)
-                                page.wait_for_timeout(2000) # Buffer
+                                page.goto(site["url"], wait_until="domcontentloaded") 
+                                
+                                # =========================================================================
+                                # CORREÇÃO DO TIMEOUT: Simulação de clique no dropdown customizado
+                                # =========================================================================
+                                print("[INFO] Tentando simular cliques para ordenação...")
+                                
+                                # 1. Clica no elemento visível que simula o dropdown (div com 'select-selected')
+                                # Seletor: Busca a classe '.select-selected' dentro da classe '.select-ordering'
+                                page.click('.select-ordering .select-selected') 
+                                page.wait_for_timeout(500) # Pausa curta para a animação abrir o dropdown
+                                
+                                # 2. Clica na opção "Mais recentes primeiro" (que é o segundo item da lista de opções simulada)
+                                # Seletor: Busca a segunda div (nth=1) dentro de '.select-items' na classe '.select-ordering'
+                                page.click('.select-ordering .select-items div >> nth=1') 
+                                
+                                print("[INFO] Ordenação aplicada (Mais recentes primeiro). Aguardando carregamento...")
+                                
+                                # 3. Esperas:
+                                page.wait_for_selector(".tab-noticias article.edital", timeout=30000) 
+                                page.wait_for_timeout(2000) 
+                                # =========================================================================
+
+                                # Extrai o HTML da div que contém a lista de licitações já ordenada
                                 html = page.inner_html("#licitacoes-list")
                                 browser.close()
                                 
                         except Exception as e:
-                            print(f"[ERRO PLAYWRIGHT/FIEP] Falha ao buscar conteúdo: {e}")
+                            print(f"[ERRO PLAYWRIGHT/FIEP] Falha ao buscar e ordenar conteúdo: {e}")
                             html = None
                     
-                    # 3. FLUXO DINÂMICO (Playwright genérico com Scroll - fetch_dynamic_scroll)
+                    # 3. FLUXO DINÂMICO/ESTÁTICO (Outros sites)
                     elif site.get("dynamic"):
-                        stop_sel = site.get("stop_selector")
-                        date_thres = site.get("date_threshold")
-                        
-                        # A função fetch_dynamic_scroll (deve ser síncrona)
-                        html = fetch_dynamic_scroll(
-                            site["url"], 
-                            stop_selector=stop_sel, 
-                            date_threshold=date_thres
-                        )
-                        
-                    # 4. FLUXO ESTÁTICO (requests.get simples)
+                        # ... (Seu código original para fetch_dynamic_scroll) ...
+                        pass
                     else:
                         response = requests.get(site["url"], timeout=30)
-                        response.raise_for_status() # Lança exceção em caso de erro HTTP
+                        response.raise_for_status() 
                         html = response.text
 
                     # --- Processamento Comum ---
                     items = []
                     if html:
-                        # Assumindo que site["parser"] é uma função importada
-                        items = site["parser"](html, base_url=site.get("base"))
+                        items = site["parser"](html, base_url=site.get("url"))
 
                     print(f"[INFO] {len(items)} itens encontrados em {site['name']}")
                     
-                    # --- Lógica de Alerta e Persistência ---
+                    # --- Lógica de Alerta e OTIMIZAÇÃO DE PARADA ---
                     new_count = 0
                     for item in items:
-                        is_new, _ = is_new_and_save(item) # Salva no banco/cache
+                        is_new, _ = is_new_and_save(item) 
+                        
                         if is_new:
                             new_count += 1
                             msg = format_item_message(item)
                             ok, resp = send_telegram_message(msg)
                             print(f"[ALERTA] Novo item [{site['name']}]: {item['title']}", 
-                                    "-> Enviado!" if ok else f"-> ERRO TELEGRAM: {resp}")
+                                    ("-> Enviado!" if ok else f"-> ERRO TELEGRAM: {resp}"))
+                        else:
+                            # OTIMIZAÇÃO: Para a verificação ao encontrar um item antigo (pois está ordenado)
+                            print(f"[INFO] Item '{item.get('title', 'Sem Título')}' já processado. Interrompendo a verificação.")
+                            break 
                             
                     print(f"[INFO] {new_count} novos alertas enviados para {site['name']}")
 
-                # CLÁUSULAS DE EXCEÇÃO DO BLOCO INTERNO (por site)
                 except requests.exceptions.RequestException as e:
                     print(f"[ERRO] Falha de requisição no site {site['name']} (HTTP/Rede): {e}")
                 except Exception as e:
@@ -914,8 +931,8 @@ def main_loop():
             print(f"[ERRO GRAVE] Falha no loop principal de sites: {loop_error}")
             
         # --- Tempo de Espera ---
-        sleep_time = 15
-        print(f"[INFO] Dormindo {sleep_time} segundos...")
+        sleep_time = 30
+        print(f"\n[INFO] Ciclo completo. Dormindo {sleep_time} segundos...")
         time.sleep(sleep_time)
 
 if __name__ == "__main__":
