@@ -862,33 +862,33 @@ def parse_casan_list(html, base_url="https://www.casan.com.br"):
 
 # SITES
 SITES = [
-    #{"name": "FIEP", 
-    # "url": "https://portaldecompras.sistemafiep.org.br", 
-    # "parser": parse_fiep, 
-    # "base": "https://portaldecompras.sistemafiep.org.br", 
-    # "dynamic": True, 
-    # "fetcher": fetch_fiep_with_pagination
-    # },
-    #{"name": "FIESC", "url": "https://portaldecompras.fiesc.com.br/Portal/Mural.aspx", "parser": parse_fiesc_tabela, "dynamic": True, "base": "https://portaldecompras.fiesc.com.br"},
-    #{"name": "FIEMS", 
-    # "url": "https://compras.fiems.com.br/portal/Mural.aspx?nNmTela=E", 
-    # "parser": parse_fiems_tabela, 
-    # "dynamic": True, 
-    # "base": "https://compras.fiems.com.br",
-     # CONFIGURAÇÃO DE PARADA BASEADA EM DATA
-    # "stop_selector": "tbody#trListaMuralProcesso tr td:nth-child(7)",
-    # "date_threshold": 2024
-    #},
+    {"name": "FIEP", 
+     "url": "https://portaldecompras.sistemafiep.org.br", 
+     "parser": parse_fiep, 
+     "base": "https://portaldecompras.sistemafiep.org.br", 
+     "dynamic": True, 
+     "fetcher": fetch_fiep_with_pagination
+     },
+    {"name": "FIESC", "url": "https://portaldecompras.fiesc.com.br/Portal/Mural.aspx", "parser": parse_fiesc_tabela, "dynamic": True, "base": "https://portaldecompras.fiesc.com.br"},
+    {"name": "FIEMS", 
+     "url": "https://compras.fiems.com.br/portal/Mural.aspx?nNmTela=E", 
+     "parser": parse_fiems_tabela, 
+     "dynamic": True, 
+     "base": "https://compras.fiems.com.br",
+    # CONFIGURAÇÃO DE PARADA BASEADA EM DATA
+     "stop_selector": "tbody#trListaMuralProcesso tr td:nth-child(7)",
+     "date_threshold": 2024
+    },
     #{"name": "Licitacoes-e", "url": "https://www.licitacoes-e.com.br/aop/index.jsp?codSite=39763", "parser": parse_div_list, "dynamic": True, "base": "https://www.licitacoes-e.com.br"},
-    #{"name": "BNC", "url": "https://bnccompras.com/Process/ProcessSearchPublic?param1=0", "parser": parse_bnc, "dynamic": True, "base": "https://bnccompras.com/Process/ProcessSearchPublic?param1=0"},
-    #{"name": "Sanesul", 
-    # "url": "https://www.sanesul.ms.gov.br/licitacao/tipolicitacao/licitacao", 
-    # "parser": parse_sanesul_from_playwright_content, 
-    # "dynamic": False,
-    # "base": "https://www.sanesul.ms.gov.br",
-    # "stop_selector": "table#conteudo_gridLicitacao tr td:nth-child(4)", 
-    # "date_threshold": 2025
-    # },
+    {"name": "BNC", "url": "https://bnccompras.com/Process/ProcessSearchPublic?param1=0", "parser": parse_bnc, "dynamic": True, "base": "https://bnccompras.com/Process/ProcessSearchPublic?param1=0"},
+    {"name": "Sanesul", 
+     "url": "https://www.sanesul.ms.gov.br/licitacao/tipolicitacao/licitacao", 
+     "parser": parse_sanesul_from_playwright_content, 
+     "dynamic": False,
+     "base": "https://www.sanesul.ms.gov.br",
+     "stop_selector": "table#conteudo_gridLicitacao tr td:nth-child(4)", 
+     "date_threshold": 2025
+    },
     {"name": "Casan", 
      "url": "https://www.casan.com.br/licitacoes/editais", 
      "parser": parse_casan_list, 
@@ -1007,7 +1007,7 @@ def main_loop():
             print(f"[ERRO GRAVE] Falha no loop principal de sites: {loop_error}")
             
         # --- Tempo de Espera ---
-        sleep_time = 30 # Usando 30 segundos conforme definido no código original
+        sleep_time = 3600  # 1 hora
         print(f"\n[INFO] Ciclo completo. Dormindo {sleep_time} segundos...")
         time.sleep(sleep_time)
 
