@@ -713,10 +713,13 @@ def fetch_sanesul_playwright(url, base_url="https://www.sanesul.ms.gov.br"):
     return all_items
 
 
-def fetch_casan_form(url="https://www.casan.com.br/licitacoes/editais"):
+def fetch_casan_form(url="https://www.casan.com.br/licitacoes/editais", **kwargs):
     """
     Busca os dados de licitações da CASAN interagindo com o formulário SELECT/Pesquisar,
     com foco na condição de espera pelo carregamento dos resultados.
+    
+    A assinatura agora aceita 'url' (que é passado explicitamente pelo main_loop)
+    e **kwargs para ignorar o restante do dicionário 'site' passado.
     """
     
     anos_desejados = ["2025"]
@@ -748,10 +751,8 @@ def fetch_casan_form(url="https://www.casan.com.br/licitacoes/editais"):
                 page.click(BUTTON_PESQUISAR_SELECTOR)
                 
                 # 3. GARANTIA DE ESPERA:
-                # Tentativa A: Esperar pela mensagem de quantidade, ou que uma tabela apareça.
                 try:
                     # Espera que o container tenha resultados (mensagem "Quantidade:")
-                    # ou uma tabela de licitação (se não houver resultados, espera apenas 5s)
                     page.wait_for_selector(
                         f'{RESULT_CONTAINER_SELECTOR}:has-text("Quantidade:") , {RESULT_ITEM_SELECTOR}',
                         timeout=15000 # Tempo de espera reduzido para 15s (mais rápido que 30s default)
@@ -773,7 +774,7 @@ def fetch_casan_form(url="https://www.casan.com.br/licitacoes/editais"):
         print(f"[ERRO] Falha na interação dinâmica da CASAN: {e}")
         try:
             if 'browser' in locals() and browser:
-                 browser.close()
+                browser.close()
         except:
             pass
         return None
@@ -880,20 +881,21 @@ SITES = [
     #},
     #{"name": "Licitacoes-e", "url": "https://www.licitacoes-e.com.br/aop/index.jsp?codSite=39763", "parser": parse_div_list, "dynamic": True, "base": "https://www.licitacoes-e.com.br"},
     #{"name": "BNC", "url": "https://bnccompras.com/Process/ProcessSearchPublic?param1=0", "parser": parse_bnc, "dynamic": True, "base": "https://bnccompras.com/Process/ProcessSearchPublic?param1=0"},
-    {"name": "Sanesul", 
-     "url": "https://www.sanesul.ms.gov.br/licitacao/tipolicitacao/licitacao", 
-     "parser": parse_sanesul_from_playwright_content, 
-     "dynamic": False,
-     "base": "https://www.sanesul.ms.gov.br",
-     "stop_selector": "table#conteudo_gridLicitacao tr td:nth-child(4)", 
-     "date_threshold": 2025},
-    #{"name": "Casan", 
-    # "url": "https://www.casan.com.br/licitacoes/editais", 
-    # "parser": parse_casan_list, 
-    # "dynamic": True, # Define como dinâmico para usar a lógica de fetchers customizados/Playwright
-    # "base": "https://www.casan.com.br",
-    # "fetcher": fetch_casan_form 
-    #},
+    #{"name": "Sanesul", 
+    # "url": "https://www.sanesul.ms.gov.br/licitacao/tipolicitacao/licitacao", 
+    # "parser": parse_sanesul_from_playwright_content, 
+    # "dynamic": False,
+    # "base": "https://www.sanesul.ms.gov.br",
+    # "stop_selector": "table#conteudo_gridLicitacao tr td:nth-child(4)", 
+    # "date_threshold": 2025
+    # },
+    {"name": "Casan", 
+     "url": "https://www.casan.com.br/licitacoes/editais", 
+     "parser": parse_casan_list, 
+     "dynamic": True, # Define como dinâmico para usar a lógica de fetchers customizados/Playwright
+     "base": "https://www.casan.com.br",
+     "fetcher": fetch_casan_form 
+    },
 ]
 
 # LOOP PRINCIPAL
@@ -958,6 +960,15 @@ def main_loop():
                             new_count = site["fetcher"](site)
                             print(f"[INFO] {new_count} novos alertas enviados para {site['name']} (Flow Customizado)")
                             continue # Vai para o próximo site
+                        elif site['name'] == 'Casan':
+                            print("[FETCH] Usando Playwright/Form (Casan)")
+                            
+                            # SOLUÇÃO: Passar 'url' explicitamente e o resto dos argumentos
+                            # APÓS REMOVER 'url' do dicionário para evitar duplicação.
+                            fetch_kwargs = site.copy()
+                            fetch_kwargs.pop('url', None) # Remove 'url' para evitar o conflito
+                            
+                            html = site["fetcher"](url=site["url"], **fetch_kwargs)
                         else:
                             # Outros fetchers customizados que só retornam o HTML
                             html = site["fetcher"](url=site["url"], **site)
