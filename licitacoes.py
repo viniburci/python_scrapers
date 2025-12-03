@@ -210,34 +210,108 @@ def fetch_dynamic_scroll(url, wait_selector="table, div", stop_selector=None, da
 
 
 # --- PARSERS ESPECÍFICOS ---
-
-def fetch_fiep_sync(url, **kwargs):
+def fetch_fiep_with_pagination(site_config):
     """
-    Função síncrona que usa Playwright para buscar o conteúdo dinâmico.
+    Busca o conteúdo da FIEP, aplica a ordenação e itera sobre todas as páginas 
+    usando cliques no botão 'próximo'. Para ao encontrar o primeiro item antigo.
     """
-    print(f"[FETCH] Usando Playwright (síncrono) para carregar: {url}")
+    url = site_config["url"]
     
-    html_content = None
-    try:
-        with sync_playwright() as p:
-            browser = p.chromium.launch()
-            page = browser.new_page()
+    # Lista para armazenar todos os novos itens encontrados (apenas para contagem)
+    all_new_items = []
+    
+    print(f"[FETCH] Iniciando Playwright para {site_config['name']} (com paginação)...")
+
+    with sync_playwright() as p:
+        browser = p.chromium.launch(headless=True) # Mantenha headless=True em produção
+        page = browser.new_page()
+        
+        try:
+            page.goto(url, wait_until="domcontentloaded", timeout=60000) 
             
-            page.goto(url, wait_until="networkidle") # Espera a rede estabilizar
+            # 1. ORDENAÇÃO (GARANTIR MAIS RECENTES PRIMEIRO)
+            try:
+                print("[INFO] Tentando simular cliques para ordenação 'Mais recentes primeiro'...")
+                # 1. Clica para abrir o dropdown customizado
+                page.click('.select-ordering .select-selected') 
+                page.wait_for_timeout(500) 
+                
+                # 2. Clica na opção "Mais recentes primeiro" 
+                # Seletor usando :has-text (mais robusto que nth=1)
+                page.click('.select-ordering .select-items div:has-text("Mais recentes primeiro")') 
+                
+                print("[INFO] Ordenação aplicada. Aguardando carregamento dos itens...")
+                page.wait_for_selector(".tab-noticias article.edital", timeout=20000) 
+                page.wait_for_timeout(1500) 
+            except Exception as e:
+                print(f"[ALERTA] Falha na ordenação inicial, continuando: {e}")
+
+            # 2. LOOP DE PAGINAÇÃO
+            page_num = 1
+            max_pages = 20 # Limite de segurança
             
-            # Espera até que a lista de licitações apareça (seletor principal)
-            page.wait_for_selector(".tab-noticias article.edital", timeout=20000)
+            while page_num <= max_pages:
+                print(f"\n[INFO] Processando página #{page_num}...")
+                
+                # A. Extrai o HTML da lista atual
+                html_content = page.inner_html("#licitacoes-list")
+                
+                # B. Realiza o parsing
+                current_page_items = site_config["parser"](html_content, base_url=url)
+                
+                print(f"[INFO] Página #{page_num}: {len(current_page_items)} itens encontrados.")
+                
+                found_old_item = False
+                new_items_on_page = 0
+                
+                # C. Processa e verifica novos itens (Lógica de Otimização)
+                for item in current_page_items:
+                    is_new, _ = is_new_and_save(item) 
+                    
+                    if is_new:
+                        new_items_on_page += 1
+                        all_new_items.append(item)
+                        msg = format_item_message(item)
+                        ok, resp = send_telegram_message(msg)
+                        print(f"[ALERTA] Novo item [{site_config['name']}]: {item['title'][:50]}...", 
+                              ("-> Enviado!" if ok else f"-> ERRO TELEGRAM: {resp}"))
+                    else:
+                        # OTIMIZAÇÃO CRUCIAL: Se o site está ordenado (o que garantimos com o clique),
+                        # ao encontrar um item antigo, paramos a busca.
+                        print(f"[INFO] Item '{item.get('title', 'Sem Título')}' já processado. Interrompendo a paginação.")
+                        found_old_item = True
+                        break 
+                
+                print(f"[INFO] {new_items_on_page} novos alertas enviados na página #{page_num}.")
+                
+                if found_old_item:
+                    break # Sai do loop principal (while page_num)
+                
+                # D. Tenta ir para a próxima página
+                page_num += 1
+                
+                # Seletor para o botão "Próximo"
+                next_button_selector = '.paginationjs-next:not(.disabled)'
+                
+                if page.is_visible(next_button_selector):
+                    print("[INFO] Clicando no botão 'Próximo'...")
+                    page.click(next_button_selector)
+                    # Espera a lista carregar o novo conteúdo
+                    page.wait_for_timeout(2000) 
+                else:
+                    print("[INFO] Botão 'Próximo' não visível ou desabilitado. Fim da paginação.")
+                    break
+
+        except Exception as e:
+            print(f"[ERRO PLAYWRIGHT/FIEP] Falha durante o ciclo de paginação: {e}")
             
-            # Extrai o HTML do contêiner que segura as licitações
-            html_content = page.inner_html("#licitacoes-list")
-            
+        finally:
             browser.close()
             
-    except Exception as e:
-        print(f"[ERRO PLAYWRIGHT] Falha ao buscar conteúdo dinâmico: {e}")
-        html_content = None
-        
-    return html_content
+    return len(all_new_items)
+
+
+
 
 def fetch_static(url, **kwargs):
     """
@@ -792,7 +866,7 @@ SITES = [
      "parser": parse_fiep, 
      "base": "https://portaldecompras.sistemafiep.org.br", 
      "dynamic": True, 
-     "fetcher": fetch_fiep_sync
+     "fetcher": fetch_fiep_with_pagination
      },
     #{"name": "FIESC", "url": "https://portaldecompras.fiesc.com.br/Portal/Mural.aspx", "parser": parse_fiesc_tabela, "dynamic": True, "base": "https://portaldecompras.fiesc.com.br"},
     #{"name": "FIEMS", 
@@ -823,15 +897,11 @@ SITES = [
 ]
 
 # LOOP PRINCIPAL
-import time
-import requests
-from playwright.sync_api import sync_playwright
-# Importe aqui as suas funções auxiliares
+
 
 def main_loop():
     """
     Loop principal que itera sobre os sites e extrai o conteúdo.
-    CORREÇÃO APLICADA: Interação por clique no elemento visível para ordenação da FIEP.
     """
     while True:
         try:
@@ -844,82 +914,48 @@ def main_loop():
                 try:
                     print(f"\n[INFO] Buscando site: {site['name']} ({site['url']})")
                     
-                    html = None
+                    new_count = 0
                     
-                    if site.get("fetcher") and site['name'] != 'FIEP': 
-                        html = site["fetcher"](url=site["url"])
-                    
-                    # 2. FLUXO EXCLUSIVO PARA FIEP (Playwright com Interação por Clique)
-                    elif site['name'] == 'FIEP':
-                        print("[FETCH] Usando Playwright (síncrono) INLINE para FIEP (garantindo ordenação 'Mais recentes primeiro').")
-                        try:
-                            with sync_playwright() as p:
-                                browser = p.chromium.launch() 
-                                page = browser.new_page()
-                                
-                                page.goto(site["url"], wait_until="domcontentloaded") 
-                                
-                                # =========================================================================
-                                # CORREÇÃO DO TIMEOUT: Simulação de clique no dropdown customizado
-                                # =========================================================================
-                                print("[INFO] Tentando simular cliques para ordenação...")
-                                
-                                # 1. Clica no elemento visível que simula o dropdown (div com 'select-selected')
-                                # Seletor: Busca a classe '.select-selected' dentro da classe '.select-ordering'
-                                page.click('.select-ordering .select-selected') 
-                                page.wait_for_timeout(500) # Pausa curta para a animação abrir o dropdown
-                                
-                                # 2. Clica na opção "Mais recentes primeiro" (que é o segundo item da lista de opções simulada)
-                                # Seletor: Busca a segunda div (nth=1) dentro de '.select-items' na classe '.select-ordering'
-                                page.click('.select-ordering .select-items div >> nth=1') 
-                                
-                                print("[INFO] Ordenação aplicada (Mais recentes primeiro). Aguardando carregamento...")
-                                
-                                # 3. Esperas:
-                                page.wait_for_selector(".tab-noticias article.edital", timeout=30000) 
-                                page.wait_for_timeout(2000) 
-                                # =========================================================================
+                    # 1. FLUXO CUSTOMIZADO (FIEP e outros com fetcher)
+                    if site.get("fetcher"): 
+                        # O fetcher customizado (como fetch_fiep_with_pagination)
+                        # já contém a lógica de parsing, save e alerta.
+                        if site['name'] == 'FIEP':
+                             new_count = site["fetcher"](site)
+                        else:
+                             # Para outros fetchers que apenas retornam o HTML
+                             html = site["fetcher"](url=site["url"])
+                             items = site["parser"](html, base_url=site.get("url"))
+                             # Continua com a lógica de alerta e parada
+                             for item in items:
+                                 is_new, _ = is_new_and_save(item)
+                                 if is_new:
+                                     new_count += 1
+                                     msg = format_item_message(item)
+                                     send_telegram_message(msg)
+                                 else:
+                                     break
 
-                                # Extrai o HTML da div que contém a lista de licitações já ordenada
-                                html = page.inner_html("#licitacoes-list")
-                                browser.close()
-                                
-                        except Exception as e:
-                            print(f"[ERRO PLAYWRIGHT/FIEP] Falha ao buscar e ordenar conteúdo: {e}")
-                            html = None
-                    
-                    # 3. FLUXO DINÂMICO/ESTÁTICO (Outros sites)
-                    elif site.get("dynamic"):
-                        # ... (Seu código original para fetch_dynamic_scroll) ...
-                        pass
-                    else:
+                    # 2. FLUXO ESTÁTICO (Caso você adicione sites estáticos)
+                    elif not site.get("dynamic"):
                         response = requests.get(site["url"], timeout=30)
                         response.raise_for_status() 
                         html = response.text
-
-                    # --- Processamento Comum ---
-                    items = []
-                    if html:
                         items = site["parser"](html, base_url=site.get("url"))
-
-                    print(f"[INFO] {len(items)} itens encontrados em {site['name']}")
-                    
-                    # --- Lógica de Alerta e OTIMIZAÇÃO DE PARADA ---
-                    new_count = 0
-                    for item in items:
-                        is_new, _ = is_new_and_save(item) 
+                        # Continua com a lógica de alerta e parada
+                        for item in items:
+                            is_new, _ = is_new_and_save(item)
+                            if is_new:
+                                new_count += 1
+                                msg = format_item_message(item)
+                                send_telegram_message(msg)
+                            else:
+                                break
+                    else:
+                        # Lidar com sites dinâmicos que não têm um fetcher customizado
+                        print(f"[ALERTA] Site dinâmico {site['name']} sem fetcher definido. Ignorando.")
+                        continue
                         
-                        if is_new:
-                            new_count += 1
-                            msg = format_item_message(item)
-                            ok, resp = send_telegram_message(msg)
-                            print(f"[ALERTA] Novo item [{site['name']}]: {item['title']}", 
-                                    ("-> Enviado!" if ok else f"-> ERRO TELEGRAM: {resp}"))
-                        else:
-                            # OTIMIZAÇÃO: Para a verificação ao encontrar um item antigo (pois está ordenado)
-                            print(f"[INFO] Item '{item.get('title', 'Sem Título')}' já processado. Interrompendo a verificação.")
-                            break 
-                            
                     print(f"[INFO] {new_count} novos alertas enviados para {site['name']}")
 
                 except requests.exceptions.RequestException as e:
@@ -931,7 +967,7 @@ def main_loop():
             print(f"[ERRO GRAVE] Falha no loop principal de sites: {loop_error}")
             
         # --- Tempo de Espera ---
-        sleep_time = 30
+        sleep_time = 30 # Usando 30 segundos conforme definido no código original
         print(f"\n[INFO] Ciclo completo. Dormindo {sleep_time} segundos...")
         time.sleep(sleep_time)
 
