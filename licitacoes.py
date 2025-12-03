@@ -861,18 +861,18 @@ def parse_casan_list(html, base_url="https://www.casan.com.br"):
 
 # SITES
 SITES = [
-    {"name": "FIEP", 
-     "url": "https://portaldecompras.sistemafiep.org.br", 
-     "parser": parse_fiep, 
-     "base": "https://portaldecompras.sistemafiep.org.br", 
-     "dynamic": True, 
-     "fetcher": fetch_fiep_with_pagination
-     },
+    #{"name": "FIEP", 
+    # "url": "https://portaldecompras.sistemafiep.org.br", 
+    # "parser": parse_fiep, 
+    # "base": "https://portaldecompras.sistemafiep.org.br", 
+    # "dynamic": True, 
+    # "fetcher": fetch_fiep_with_pagination
+    # },
     #{"name": "FIESC", "url": "https://portaldecompras.fiesc.com.br/Portal/Mural.aspx", "parser": parse_fiesc_tabela, "dynamic": True, "base": "https://portaldecompras.fiesc.com.br"},
     #{"name": "FIEMS", 
     # "url": "https://compras.fiems.com.br/portal/Mural.aspx?nNmTela=E", 
     # "parser": parse_fiems_tabela, 
-    #"dynamic": True, 
+    # "dynamic": True, 
     # "base": "https://compras.fiems.com.br",
      # CONFIGURAÇÃO DE PARADA BASEADA EM DATA
     # "stop_selector": "tbody#trListaMuralProcesso tr td:nth-child(7)",
@@ -880,13 +880,13 @@ SITES = [
     #},
     #{"name": "Licitacoes-e", "url": "https://www.licitacoes-e.com.br/aop/index.jsp?codSite=39763", "parser": parse_div_list, "dynamic": True, "base": "https://www.licitacoes-e.com.br"},
     #{"name": "BNC", "url": "https://bnccompras.com/Process/ProcessSearchPublic?param1=0", "parser": parse_bnc, "dynamic": True, "base": "https://bnccompras.com/Process/ProcessSearchPublic?param1=0"},
-    #{"name": "Sanesul", 
-    # "url": "https://www.sanesul.ms.gov.br/licitacao/tipolicitacao/licitacao", 
-    # "parser": parse_sanesul_from_playwright_content, 
-    #"dynamic": False,
-    # "base": "https://www.sanesul.ms.gov.br",
-    # "stop_selector": "table#conteudo_gridLicitacao tr td:nth-child(4)", 
-    # "date_threshold": 2025},
+    {"name": "Sanesul", 
+     "url": "https://www.sanesul.ms.gov.br/licitacao/tipolicitacao/licitacao", 
+     "parser": parse_sanesul_from_playwright_content, 
+     "dynamic": False,
+     "base": "https://www.sanesul.ms.gov.br",
+     "stop_selector": "table#conteudo_gridLicitacao tr td:nth-child(4)", 
+     "date_threshold": 2025},
     #{"name": "Casan", 
     # "url": "https://www.casan.com.br/licitacoes/editais", 
     # "parser": parse_casan_list, 
@@ -898,64 +898,93 @@ SITES = [
 
 # LOOP PRINCIPAL
 
+def process_items_and_alert(site_name, items):
+    """Lógica comum de verificação, salvamento e alerta com otimização de parada."""
+    new_count = 0
+    for item in items:
+        is_new, _ = is_new_and_save(item) 
+        
+        if is_new:
+            new_count += 1
+            msg = format_item_message(item)
+            ok, resp = send_telegram_message(msg)
+            # Imprime o log de novo item
+            print(f"[ALERTA] Novo item [{site_name}]: {item['title'][:50]}...", 
+                  ("-> Enviado!" if ok else f"-> ERRO TELEGRAM: {resp}"))
+        else:
+            # OTIMIZAÇÃO: Interrompe a verificação ao encontrar um item antigo (se estiver ordenado)
+            print(f"[INFO] Item '{item.get('title', 'Sem Título')}' já processado. Interrompendo a verificação.")
+            break 
+            
+    return new_count
+
 
 def main_loop():
     """
     Loop principal que itera sobre os sites e extrai o conteúdo.
+    Implementação da lógica de fetching/parsing baseada nas configurações do site.
     """
     while True:
         try:
             for site in SITES:
                 
                 if site['name'] == 'Sanesul':
-                    print(f"[INFO] Ignorando Sanesul (Tratamento especial/separado)...")
-                    continue 
+                    print(f"[INFO] Buscando site: {site['name']} (Paginação via Playwright)")
+                    items = fetch_sanesul_playwright(site['url'], site['base'])
+                    print(f"[INFO] {len(items)} itens encontrados em {site['name']}")
+
+                    new_count = 0
+                    for item in items:
+                        is_new, _ = is_new_and_save(item)
+                        if is_new:
+                            new_count += 1
+                            msg = format_item_message(item)
+                            ok, resp = send_telegram_message(msg)
+                            print(f"[ALERTA] Novo item [{site['name']}]: {item['title']}", "Enviado" if ok else f"Erro: {resp}")
+                    print(f"[INFO] {new_count} novos alertas enviados para {site['name']}")
+                    continue
                 
                 try:
                     print(f"\n[INFO] Buscando site: {site['name']} ({site['url']})")
                     
+                    html = None
+                    items = []
                     new_count = 0
                     
-                    # 1. FLUXO CUSTOMIZADO (FIEP e outros com fetcher)
-                    if site.get("fetcher"): 
-                        # O fetcher customizado (como fetch_fiep_with_pagination)
-                        # já contém a lógica de parsing, save e alerta.
+                    # 1. FLUXO CUSTOMIZADO (Ex: FIEP, que usa Playwright + Paginação + Processamento interno)
+                    if site.get("fetcher"):
                         if site['name'] == 'FIEP':
-                             new_count = site["fetcher"](site)
+                            # O fetcher da FIEP já faz o parsing e o alerta internamente
+                            new_count = site["fetcher"](site)
+                            print(f"[INFO] {new_count} novos alertas enviados para {site['name']} (Flow Customizado)")
+                            continue # Vai para o próximo site
                         else:
-                             # Para outros fetchers que apenas retornam o HTML
-                             html = site["fetcher"](url=site["url"])
-                             items = site["parser"](html, base_url=site.get("url"))
-                             # Continua com a lógica de alerta e parada
-                             for item in items:
-                                 is_new, _ = is_new_and_save(item)
-                                 if is_new:
-                                     new_count += 1
-                                     msg = format_item_message(item)
-                                     send_telegram_message(msg)
-                                 else:
-                                     break
+                            # Outros fetchers customizados que só retornam o HTML
+                            html = site["fetcher"](url=site["url"], **site)
 
-                    # 2. FLUXO ESTÁTICO (Caso você adicione sites estáticos)
-                    elif not site.get("dynamic"):
-                        response = requests.get(site["url"], timeout=30)
-                        response.raise_for_status() 
-                        html = response.text
-                        items = site["parser"](html, base_url=site.get("url"))
-                        # Continua com a lógica de alerta e parada
-                        for item in items:
-                            is_new, _ = is_new_and_save(item)
-                            if is_new:
-                                new_count += 1
-                                msg = format_item_message(item)
-                                send_telegram_message(msg)
-                            else:
-                                break
+                    # 2. FLUXO DINÂMICO GENÉRICO (Sites marcados como 'dynamic', mas sem fetcher customizado)
+                    elif site.get("dynamic", False):
+                        print("[FETCH] Usando Playwright/Scroll (Dynamic Generic)")
+                        # Reutiliza a função genérica de rolagem
+                        html = fetch_dynamic_scroll(
+                            site["url"], 
+                            stop_selector=site.get("stop_selector"), 
+                            date_threshold=site.get("date_threshold")
+                        )
+
+                    # 3. FLUXO ESTÁTICO (Fallback para tudo que não é customizado nem dinâmico)
                     else:
-                        # Lidar com sites dinâmicos que não têm um fetcher customizado
-                        print(f"[ALERTA] Site dinâmico {site['name']} sem fetcher definido. Ignorando.")
-                        continue
+                        print("[FETCH] Usando Requests (Static)")
+                        html = fetch_static(site["url"])
+                    
+                    # --- Processamento Comum para Fluxos 1 (Outros) e 2 e 3 ---
+                    if html:
+                        items = site["parser"](html, base_url=site.get("url"))
+                        print(f"[INFO] {len(items)} itens encontrados em {site['name']}")
                         
+                        # Chama a lógica de verificação e alerta
+                        new_count = process_items_and_alert(site['name'], items)
+                    
                     print(f"[INFO] {new_count} novos alertas enviados para {site['name']}")
 
                 except requests.exceptions.RequestException as e:
