@@ -6,45 +6,36 @@ import urllib.parse
 import re
 from bs4 import BeautifulSoup
 from playwright.sync_api import sync_playwright
-import psycopg2
-from playwright.async_api import async_playwright
+import os
+import sys
+from supabase import create_client, Client
+from dotenv import load_dotenv
 
-# CONFIGURAÇÃO - PostgreSQL
-PG_HOST = "localhost"
-PG_PORT = 5432
-PG_DB = "licitacoes"
-PG_USER = "postgres"
-PG_PASS = "123"
+load_dotenv()
 
-# CONFIGURAÇÃO - Telegram
-TELEGRAM_TOKEN = "8071395009:AAH-7P6Cys3hncbQdaJYB2paoK7sVeh884s"  
-TELEGRAM_CHAT_ID = "-1003163879445" 
+url: str = os.environ.get("SUPABASE_URL")
+key: str = os.environ.get("SUPABASE_KEY")
+TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN") 
+TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID")
+CHECK_INTERVAL_SECONDS = int(os.environ.get("CHECK_INTERVAL_SECONDS", 1800)) # Adiciona um default, caso a variável falhe
+TABELA_NOTICES = "licitacoes" # Verifique se este é o nome da sua tabela no Supabase!
 
-CHECK_INTERVAL_SECONDS = 15  # 1800 == 30 minutos
+# 1. VERIFICAÇÃO INICIAL E CONEXÃO SUPABASE
+if not url or not key:
+    print("[ERRO FATAL] SUPABASE_URL ou SUPABASE_KEY não definidos nas variáveis de ambiente.")
+    sys.exit(1)
 
-# Conexão PostgreSQL
 try:
-    conn = psycopg2.connect(
-        host=PG_HOST, port=PG_PORT, dbname=PG_DB, user=PG_USER, password=PG_PASS
-    )
-    cur = conn.cursor()
-except psycopg2.Error as e:
-    print(f"[ERRO] Falha ao conectar ao PostgreSQL: {e}")
-    exit(1)
+    supabase: Client = create_client(url, key)
+    # Tenta rodar uma operação simples para verificar a chave
+    supabase.table(TABELA_NOTICES).select("id").limit(0).execute() 
+    print("[INFO] Conexão com Supabase estabelecida e chaves verificadas.")
 
-# Criar tabela se não existir
-cur.execute("""
-CREATE TABLE IF NOT EXISTS notices (
-    id TEXT PRIMARY KEY,
-    title TEXT,
-    org TEXT,
-    url TEXT,
-    published TEXT,
-    raw_hash TEXT,
-    found_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-)
-""")
-conn.commit()
+except Exception as e:
+    # A exceção pode ocorrer por URL/KEY inválida ou problema de rede.
+    print(f"[ERRO FATAL] Falha ao conectar ao Supabase. Verifique URL/KEY: {e}")
+    sys.exit(1)
+
 
 # UTILITÁRIOS
 def md5(s: str) -> str:
@@ -55,27 +46,54 @@ def generate_unique_id(item):
     unique_str = (item['title'] or "") + "|" + (item['org'] or "") + "|" + (item['url'] or "")
     return hashlib.md5(unique_str.encode("utf-8")).hexdigest()
 
+
 def is_new_and_save(item):
-    # Gerar um ID único baseado no título e organização
+    """
+    Verifica a existência do item no Supabase e, se novo, insere.
+    """
     uid = generate_unique_id(item)
     
-    # Verifica se o ID já existe no banco de dados
-    cur.execute("SELECT 1 FROM notices WHERE id=%s", (uid,))
-    if cur.fetchone():
-        return False, uid  # Se já existe, não insere novamente
-    
+    # 1. Checa a existência no Supabase
     try:
-        # Inserir o item no banco de dados
-        cur.execute(
-            "INSERT INTO notices (id, title, org, url, published, raw_hash) VALUES (%s,%s,%s,%s,%s,%s)",
-            (uid, item['title'], item['org'], item['url'], item['published'], hashlib.md5(json.dumps(item, ensure_ascii=False).encode('utf-8')).hexdigest())
-        )
-        conn.commit()
-        return True, uid  # Item inserido com sucesso
+        # Busca na tabela 'notices' onde 'id' é igual ao uid
+        response = supabase.table(TABELA_NOTICES).select("id").eq("id", uid).limit(1).execute()
+        
+        if len(response.data) > 0:
+            return False, uid  # Já existe
+        
     except Exception as e:
-        conn.rollback()
-        print(f"[ERRO SQL] Falha ao inserir item: {e}")
-        return False, uid    
+        print(f"[ERRO SUPABASE] Falha ao verificar existência: {e}")
+        return False, uid # Assume False (não novo) em caso de erro para evitar spam
+    
+    # 2. Insere o item se for novo
+    try:
+        # Calcula o raw_hash (necessário para o schema)
+        # Use sort_keys=True para garantir o mesmo hash, independente da ordem das chaves
+        raw_hash_value = hashlib.md5(json.dumps(item, ensure_ascii=False, sort_keys=True).encode('utf-8')).hexdigest()
+
+        # Cria o payload de dados, garantindo que o `id` (PK) e o `raw_hash` existam
+        # Os campos 'obj', 'location', 'closing_date' (se existirem no item) precisam ser mapeados
+        # para as colunas da sua tabela no Supabase.
+        data_to_insert = {
+            "id": uid,
+            "title": item.get('title'),
+            "org": item.get('org'),
+            "url": item.get('url'),
+            "published": item.get('published'),
+            "raw_hash": raw_hash_value,
+            # Se você usar 'obj' e outros campos, mapeie-os aqui:
+            # "obj": item.get('obj'), 
+            # "location": item.get('location'), 
+        }
+        
+        # Insere no Supabase
+        response = supabase.table(TABELA_NOTICES).insert(data_to_insert).execute()
+        
+        return True, uid  # Item inserido com sucesso
+        
+    except Exception as e:
+        print(f"[ERRO SUPABASE] Falha ao inserir item: {e}")
+        return False, uid
     
 def escape_markdown(text):
     """
