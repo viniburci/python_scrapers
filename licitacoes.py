@@ -694,43 +694,39 @@ def parse_sanesul_from_playwright_content(html, base_url="https://www.sanesul.ms
 def fetch_sanesul_playwright(url, base_url="https://www.sanesul.ms.gov.br"):
     all_items = []
     
-    # 
-    # >>> NOVO: Extrair configurações de parada do dicionário SITES
-    #
     site_config = next((s for s in SITES if s['name'] == 'Sanesul'), {})
     date_threshold_str = str(site_config.get("date_threshold")) if site_config.get("date_threshold") else None
     
     with sync_playwright() as p:
-        # ... (código para iniciar browser e page)
         browser = p.chromium.launch(headless=True)
         page = browser.new_page()
         print(f"[PLAYWRIGHT] Navegando para a URL inicial: {url}")
-        page.goto(url, timeout=60000)
+        
+        # Garante que a primeira página carregou completamente
+        page.goto(url, wait_until="domcontentloaded", timeout=60000)
 
         current_page_num = 1
         
         while True:
             print(f"[PLAYWRIGHT] Processando Página {current_page_num}...")
             
-            # 1. Obter o conteúdo HTML da página atual
+            # 1. Obter o conteúdo HTML da página ATUAL
+            # Esta chamada deve ocorrer APÓS a navegação inicial ou APÓS o clique/espera
+            # O erro sugere que a página ainda está instável, vamos garantir a estabilidade:
+            page.wait_for_selector("#conteudo_gridLicitacao", state="visible", timeout=10000)
+            page.wait_for_load_state("domcontentloaded") # Espera o DOM carregar completamente
+            
             html_content = page.content()
             
             # 2. Chamar o seu parser para extrair os dados desta página
-            # O parser agora retorna a lista de itens e o ano do ÚLTIMO item.
             items_da_pagina, last_item_year = parse_sanesul_from_playwright_content(html_content, base_url)
             
-            #
-            # >>> NOVO: Lógica de Parada de Ano!
-            #
+            # --- Lógica de Parada de Ano ---
             if date_threshold_str and last_item_year and last_item_year < date_threshold_str:
                 print(f"[PLAYWRIGHT] Condição de parada atingida. Último item é de {last_item_year}. Parando a paginação.")
-                
-                #
-                # >>> NOVO: Filtrar apenas os itens da página atual que são de 2025
-                #
                 items_2025_only = [
                     item for item in items_da_pagina
-                    if item.get('published', '').strip().endswith(date_threshold_str) # Filtra pelo ano no campo 'published'
+                    if item.get('published', '').strip().endswith(date_threshold_str)
                 ]
                 all_items.extend(items_2025_only)
                 break 
@@ -742,34 +738,34 @@ def fetch_sanesul_playwright(url, base_url="https://www.sanesul.ms.gov.br"):
             all_items.extend(items_da_pagina)
             
             # 3. Preparar a busca pelo link da próxima página
-            # ... (código para encontrar next_link_locator)
             target_postback_value = f"Page${current_page_num + 1}"
             next_link_locator = page.locator(
                 f"a[href*='{target_postback_value}'][href*='gridLicitacao']"
             )
 
-            # 4. Verifique se o link da próxima página existe e é visível/clicável
+            # 4. Verifique se o link da próxima página existe
             if not next_link_locator.is_visible():
                 print("[PLAYWRIGHT] Fim da paginação. Link da próxima página (PostBack) não encontrado.")
                 break
                 
             try:
-                # 5. Clicar no link e esperar o recarregamento do conteúdo.
-                # ... (código para clicar e esperar)
+                # 5. Clicar no link
                 print(f"[PLAYWRIGHT] Clicando no link da página {current_page_num + 1}...")
-                next_link_locator.click() 
-                page.wait_for_selector("#conteudo_gridLicitacao", state="visible", timeout=10000)
+                
+                # Clica e ESPERA pelo evento de navegação/recarregamento
+                # O 'wait_for_load_state' pode ser o segredo aqui para PostBacks
+                with page.expect_navigation(wait_until="domcontentloaded", timeout=25000):
+                     next_link_locator.click()
+                     
                 current_page_num += 1
 
             except Exception as e:
-                print(f"[ERRO PLAYWRIGHT] Falha ao clicar no link da página {current_page_num + 1}: {e}")
+                print(f"[ERRO PLAYWRIGHT] Falha ao clicar no link/navegação da página {current_page_num + 1}: {e}")
                 break
 
         browser.close()
     
-    #
-    # >>> NOVO: No final, se a parada não foi por ano, filtra o que sobrou.
-    #
+    # ... (código final de filtro)
     if date_threshold_str:
         all_items = [
             item for item in all_items 
@@ -935,18 +931,6 @@ SITES = [
      "dynamic": True, 
      "fetcher": fetch_fiep_with_pagination
      },
-    {"name": "FIESC", "url": "https://portaldecompras.fiesc.com.br/Portal/Mural.aspx", "parser": parse_fiesc_tabela, "dynamic": True, "base": "https://portaldecompras.fiesc.com.br"},
-    {"name": "FIEMS", 
-     "url": "https://compras.fiems.com.br/portal/Mural.aspx?nNmTela=E", 
-     "parser": parse_fiems_tabela, 
-     "dynamic": True, 
-     "base": "https://compras.fiems.com.br",
-    # CONFIGURAÇÃO DE PARADA BASEADA EM DATA
-     "stop_selector": "tbody#trListaMuralProcesso tr td:nth-child(7)",
-     "date_threshold": 2024
-    },
-    #{"name": "Licitacoes-e", "url": "https://www.licitacoes-e.com.br/aop/index.jsp?codSite=39763", "parser": parse_div_list, "dynamic": True, "base": "https://www.licitacoes-e.com.br"},
-    {"name": "BNC", "url": "https://bnccompras.com/Process/ProcessSearchPublic?param1=0", "parser": parse_bnc, "dynamic": True, "base": "https://bnccompras.com/Process/ProcessSearchPublic?param1=0"},
     {"name": "Sanesul", 
      "url": "https://www.sanesul.ms.gov.br/licitacao/tipolicitacao/licitacao", 
      "parser": parse_sanesul_from_playwright_content, 
@@ -962,6 +946,19 @@ SITES = [
      "base": "https://www.casan.com.br",
      "fetcher": fetch_casan_form 
     },
+    {"name": "FIESC", "url": "https://portaldecompras.fiesc.com.br/Portal/Mural.aspx", "parser": parse_fiesc_tabela, "dynamic": True, "base": "https://portaldecompras.fiesc.com.br"},
+    {"name": "FIEMS", 
+     "url": "https://compras.fiems.com.br/portal/Mural.aspx?nNmTela=E", 
+     "parser": parse_fiems_tabela, 
+     "dynamic": True, 
+     "base": "https://compras.fiems.com.br",
+    # CONFIGURAÇÃO DE PARADA BASEADA EM DATA
+     "stop_selector": "tbody#trListaMuralProcesso tr td:nth-child(7)",
+     "date_threshold": 2024
+    },
+    #{"name": "Licitacoes-e", "url": "https://www.licitacoes-e.com.br/aop/index.jsp?codSite=39763", "parser": parse_div_list, "dynamic": True, "base": "https://www.licitacoes-e.com.br"},
+    {"name": "BNC", "url": "https://bnccompras.com/Process/ProcessSearchPublic?param1=0", "parser": parse_bnc, "dynamic": True, "base": "https://bnccompras.com/Process/ProcessSearchPublic?param1=0"},
+    
 ]
 
 # LOOP PRINCIPAL
