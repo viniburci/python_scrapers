@@ -1,4 +1,5 @@
 import hashlib
+from urllib.parse import urlparse, urlunparse
 import time
 import json
 import requests
@@ -41,9 +42,56 @@ except Exception as e:
 def md5(s: str) -> str:
     return hashlib.md5(s.encode("utf-8")).hexdigest()
 
-def generate_unique_id(item):
-    # Gerar um ID único com base em campos fixos, como título e organização
-    unique_str = (item['title'] or "") + "|" + (item['org'] or "") + "|" + (item['url'] or "")
+
+def normalize_url_strict(url: str) -> str:
+    """
+    Normaliza uma URL de forma estrita para gerar um ID único consistente.
+    Remove:
+    1. Esquema (protocolo, padroniza para HTTPS).
+    2. Subdomínio 'www.'
+    3. Trailing slash (barra final).
+    4. Todos os parâmetros de query string (depois do '?').
+    5. Fragmentos (depois do '#').
+    """
+    if not url:
+        return ""
+
+    parsed_url = urlparse(url)
+
+    # 1. Normaliza o domínio (netloc): remove 'www.' e converte para minúsculas
+    netloc = parsed_url.netloc.lower()
+    if netloc.startswith("www."):
+        netloc = netloc[4:]
+
+    # 2. Normaliza o path: remove barras finais (trailing slashes)
+    path = parsed_url.path.rstrip('/')
+    
+    # 3. Ignora Query String (parâmetros) e Fragmentos
+    query = ''
+    fragment = ''
+    params = ''
+
+    # 4. Reconstrói a URL normalizada (padroniza o esquema para 'https')
+    # O foco é em 'netloc' e 'path'
+    normalized_url = urlunparse(('https', netloc, path, params, query, fragment))
+    
+    return normalized_url
+
+def generate_unique_id(item: dict) -> str:
+    """Gera um ID único usando a URL estritamente normalizada, título e organização."""
+    
+    # 1. Obter e Normalizar a URL
+    raw_url = item.get('url', '')
+    normalized_url = normalize_url_strict(raw_url)
+    
+    # 2. Normalizar outros campos para evitar problemas de capitalização ou espaços
+    normalized_title = (item.get('title') or "").strip().lower()
+    normalized_org = (item.get('org') or "").strip().lower()
+    
+    # 3. Cria a string única para o hash
+    unique_str = normalized_title + "|" + normalized_org + "|" + normalized_url
+    
+    # 4. Gera o hash
     return hashlib.md5(unique_str.encode("utf-8")).hexdigest()
 
 
