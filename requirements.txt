@@ -1,0 +1,14 @@
+requests
+beautifulsoup4
+playwright
+supabase
+python-dotenv
+
+# 'pip install -r requirements.txt'
+
+# é necesssário rodar: 'pip install playwright' e depois 'playwright install' para instalar os navegadores
+
+# para rodar o supabase, é necessário instalar o seguinte pacote:
+# pip install supabase
+
+# py -m pip install lxml
