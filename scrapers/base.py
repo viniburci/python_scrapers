@@ -1,5 +1,6 @@
 import logging
 from abc import ABC, abstractmethod
+from datetime import datetime
 
 from playwright.sync_api import sync_playwright
 
@@ -48,8 +49,15 @@ class BaseScraper(ABC):
         wait_selector: str = "body",
         max_scrolls: int = 50,
         scroll_pause_ms: int = 2000,
+        stop_selector: str | None = None,
+        date_threshold: str | None = None,
     ) -> str:
-        """Carrega a pagina e rola ate o fim para lazy loading."""
+        """Carrega a pagina e rola ate o fim para lazy loading.
+
+        Se stop_selector e date_threshold forem fornecidos, para de rolar
+        assim que o ultimo elemento do stop_selector contiver date_threshold
+        no seu texto (util para parar ao encontrar itens de anos anteriores).
+        """
         with sync_playwright() as p:
             browser = p.chromium.launch(headless=True)
             page = browser.new_page()
@@ -65,6 +73,25 @@ class BaseScraper(ABC):
 
                 last_height = -1
                 for i in range(max_scrolls):
+                    # Para ao encontrar item antigo (date_threshold no ultimo elemento visivel)
+                    if stop_selector and date_threshold:
+                        try:
+                            last_text = page.evaluate(
+                                """(sel) => {
+                                    const els = document.querySelectorAll(sel);
+                                    return els.length ? els[els.length - 1].textContent : null;
+                                }""",
+                                stop_selector,
+                            )
+                            if last_text and date_threshold in last_text:
+                                logger.info(
+                                    "[%s] Threshold '%s' encontrado. Parando scroll.",
+                                    self.name, date_threshold,
+                                )
+                                break
+                        except Exception:
+                            pass
+
                     page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
                     page.wait_for_timeout(scroll_pause_ms)
                     new_height = page.evaluate("document.body.scrollHeight")

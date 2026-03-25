@@ -11,18 +11,15 @@ def main():
     print("\n=== TESTE FIEP ===\n")
     scraper = FiepScraper()
 
-    print(f"[1/2] Buscando pagina: {scraper.url}")
-    print("      (aguarda carregamento dinamico dos editais)\n")
+    print(f"[1/1] Buscando e parseando: {scraper.url}")
+    print("      (paginacao + ordenacao 'Mais recentes primeiro')\n")
 
     try:
-        html = scraper.fetch()
-        print(f"[1/2] HTML capturado: {len(html)} bytes\n")
+        items = scraper.run()
     except Exception as e:
-        print(f"[ERRO] Falha no fetch: {e}")
+        print(f"[ERRO] Falha no run: {e}")
         return
 
-    print("[2/2] Parseando licitacoes...")
-    items = scraper.parse(html)
     print(f"      {len(items)} licitacoes encontradas.\n")
 
     if not items:
@@ -33,6 +30,7 @@ def main():
     for i, item in enumerate(items[:5], 1):
         print(f"[{i}] {item['title']}")
         print(f"     Orgao:     {item['org']}")
+        print(f"     Objeto:    {item.get('obj', '')[:100]}")
         print(f"     Publicado: {item['published']}")
         print(f"     URL:       {item['url']}")
         print()

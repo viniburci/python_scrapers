@@ -3,6 +3,7 @@ from datetime import datetime
 
 from bs4 import BeautifulSoup
 from playwright.sync_api import sync_playwright
+from playwright_stealth import Stealth
 
 from .base import BaseScraper
 
@@ -20,17 +21,18 @@ class SanesulScraper(BaseScraper):
         year_threshold = str(datetime.now().year)
         all_items = []
 
-        with sync_playwright() as p:
+        with Stealth().use_sync(sync_playwright()) as p:
             browser = p.chromium.launch(headless=True)
             page = browser.new_page()
             try:
                 logger.info("[Sanesul] Navegando para %s", self.url)
                 page.goto(self.url, wait_until="domcontentloaded", timeout=60_000)
+                page.wait_for_timeout(6_000)  # aguarda Cloudflare challenge
 
                 current_page = 1
                 while True:
                     logger.info("[Sanesul] Processando pagina %d...", current_page)
-                    page.wait_for_selector("#conteudo_gridLicitacao", state="visible", timeout=15_000)
+                    page.wait_for_selector("#conteudo_gridLicitacao", state="visible", timeout=30_000)
                     page.wait_for_load_state("domcontentloaded")
 
                     html = page.content()
@@ -39,7 +41,7 @@ class SanesulScraper(BaseScraper):
                     # Para quando chegamos a um ano anterior ao threshold
                     if last_year and last_year < year_threshold:
                         logger.info("[Sanesul] Ano %s anterior ao threshold %s. Parando.", last_year, year_threshold)
-                        items = [i for i in items if i.get("published", "").strip().endswith(year_threshold)]
+                        items = [i for i in items if year_threshold in i.get("published", "")]
                         all_items.extend(items)
                         break
 
@@ -68,7 +70,7 @@ class SanesulScraper(BaseScraper):
                 browser.close()
 
         # Filtro final: apenas ano corrente
-        all_items = [i for i in all_items if i.get("published", "").strip().endswith(year_threshold)]
+        all_items = [i for i in all_items if year_threshold in i.get("published", "")]
         logger.info("[Sanesul] %d itens encontrados para o ano %s", len(all_items), year_threshold)
         return all_items
 
@@ -85,29 +87,30 @@ class SanesulScraper(BaseScraper):
 
         for row in table.find_all("tr")[1:]:
             cols = row.find_all("td")
-            if len(cols) != 6:
+            if len(cols) != 5:
                 continue
 
             numero = cols[0].get_text(strip=True)
-            ano = cols[1].get_text(strip=True)
-            objeto = cols[2].get_text(strip=True)
-            data_abertura = cols[3].get_text(strip=True)
-            link_el = cols[5].find("a", {"title": "Mais detalhes da Licitação!"})
+            objeto = cols[1].get_text(strip=True)
+            published_raw = cols[2].get_text(strip=True)  # DD/MM/YYYY HH:MM:SS
 
-            if not link_el:
-                continue
-            if not (numero.strip().isdigit() and ano.strip().isdigit()):
+            if not numero.strip().isdigit():
                 continue
             if any(kw in numero for kw in ("Número", "Total")):
                 continue
 
-            url = link_el.get("href", "")
+            # Extrai ano da data (formato DD/MM/YYYY HH:MM:SS)
+            date_parts = published_raw.split("/")
+            ano = date_parts[2][:4] if len(date_parts) >= 3 else str(datetime.now().year)
+
+            # URL sintetica estavel (ID interno nao esta no HTML)
+            url = f"{BASE_URL}/licitacao/tipolicitacao/licitacao#{numero}-{ano}"
             items.append({
                 "title": f"Licitacao {numero}/{ano}",
                 "org": "Sanesul",
                 "obj": objeto,
                 "url": url,
-                "published": f"{data_abertura} {ano}",
+                "published": published_raw,
             })
             last_year = ano
 

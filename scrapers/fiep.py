@@ -3,6 +3,7 @@ import urllib.parse
 
 from bs4 import BeautifulSoup
 from playwright.sync_api import sync_playwright
+from playwright_stealth import Stealth
 
 from .base import BaseScraper
 
@@ -19,7 +20,7 @@ class FiepScraper(BaseScraper):
     def run(self) -> list[dict]:
         """Faz login de ordenacao, pagina e retorna todos os itens encontrados."""
         items = []
-        with sync_playwright() as p:
+        with Stealth().use_sync(sync_playwright()) as p:
             browser = p.chromium.launch(headless=True)
             page = browser.new_page()
             try:

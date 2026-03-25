@@ -55,7 +55,7 @@ class BncScraper(BaseScraper):
 
             link_el = cols[0].select_one("a[title='Informações do Processo']")
             url = (
-                urllib.parse.urljoin(BASE_URL, link_el["href"])
+                urllib.parse.urljoin(BASE_URL, link_el["href"].strip())
                 if link_el and "href" in link_el.attrs else None
             )
             org = cols[1].get_text(strip=True)

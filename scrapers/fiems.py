@@ -1,5 +1,6 @@
 import logging
 import re
+from datetime import datetime
 
 from bs4 import BeautifulSoup
 
@@ -16,10 +17,13 @@ class FiemsScraper(BaseScraper):
     url = "https://compras.fiems.com.br/portal/Mural.aspx?nNmTela=E"
 
     def fetch(self) -> str:
+        prev_year = str(datetime.now().year - 1)
         return self._fetch_with_scroll(
             self.url,
             wait_selector="tbody#trListaMuralProcesso",
             scroll_pause_ms=1500,
+            stop_selector="tbody#trListaMuralProcesso tr td:nth-child(7)",
+            date_threshold=prev_year,
         )
 
     def parse(self, html: str) -> list[dict]:

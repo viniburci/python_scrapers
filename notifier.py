@@ -12,8 +12,8 @@ _MAX_RETRIES = 5
 
 
 def _escape_md(text: str) -> str:
-    """Escapa caracteres especiais do Markdown do Telegram."""
-    return re.sub(r'([\\`*_{}[\]()#+\-.!])', r'\\\1', str(text))
+    """Escapa todos os caracteres especiais do MarkdownV2 do Telegram."""
+    return re.sub(r'([_*\[\]()~`>#+\-=|{}.!\\])', r'\\\1', str(text))
 
 
 def send(item: dict, source: str) -> bool:
@@ -44,7 +44,7 @@ def send(item: dict, source: str) -> bool:
         f"Orgao: {_escape_md(item.get('org', '-'))}"
         + obj_line
         + f"\nPublicado: {_escape_md(item.get('published', '-'))}"
-        f"\nLink: {item.get('url', '-')}"
+        f"\nLink: {_escape_md(item.get('url', '-'))}"
         + itens_preview
     )
 
@@ -52,7 +52,7 @@ def send(item: dict, source: str) -> bool:
     payload = {
         "chat_id": TELEGRAM_CHAT_ID,
         "text": text,
-        "parse_mode": "Markdown",
+        "parse_mode": "MarkdownV2",
         "disable_web_page_preview": False,
     }
 

@@ -1,5 +1,6 @@
 import logging
 import re
+from datetime import datetime
 
 from bs4 import BeautifulSoup
 
@@ -16,7 +17,13 @@ class FiescScraper(BaseScraper):
     url = "https://portaldecompras.fiesc.com.br/Portal/Mural.aspx"
 
     def fetch(self) -> str:
-        return self._fetch_with_scroll(self.url, wait_selector="tbody#trListaMuralProcesso")
+        prev_year = str(datetime.now().year - 1)
+        return self._fetch_with_scroll(
+            self.url,
+            wait_selector="tbody#trListaMuralProcesso",
+            stop_selector="tbody#trListaMuralProcesso tr td:nth-child(7)",
+            date_threshold=prev_year,
+        )
 
     def parse(self, html: str) -> list[dict]:
         soup = BeautifulSoup(html, "lxml")

@@ -33,6 +33,7 @@ def main():
     for i, item in enumerate(items[:5], 1):
         print(f"[{i}] {item['title']}")
         print(f"     Orgao:     {item['org']}")
+        print(f"     Objeto:    {item.get('obj', '')[:100]}")
         print(f"     Publicado: {item['published']}")
         print(f"     URL:       {item['url']}")
         print()
