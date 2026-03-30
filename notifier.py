@@ -30,12 +30,12 @@ def send(item: dict, source: str) -> bool:
     itens_preview = ""
     if itens:
         linhas = [
-            f"  \u2022 {_escape_md(i['descricao'][:80])} ({i['quantidade']} {i['unidade']})"
+            f"  \u2022 {_escape_md(i['descricao'][:80])} \\({_escape_md(i['quantidade'])} {_escape_md(i['unidade'])}\\)"
             for i in itens[:5]
         ]
         restante = total_itens - len(itens[:5])
         if restante > 0:
-            linhas.append(f"  _... e mais {restante} itens_")
+            linhas.append(f"  _\\.\\.\\. e mais {restante} itens_")
         itens_preview = "\n\n*Itens:*\n" + "\n".join(linhas)
 
     text = (

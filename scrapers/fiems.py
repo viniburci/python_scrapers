@@ -22,7 +22,7 @@ class FiemsScraper(BaseScraper):
             self.url,
             wait_selector="tbody#trListaMuralProcesso",
             scroll_pause_ms=1500,
-            stop_selector="tbody#trListaMuralProcesso tr td:nth-child(7)",
+            stop_selector="tbody#trListaMuralProcesso tr td:nth-child(6)",
             date_threshold=prev_year,
         )
 

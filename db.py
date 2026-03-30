@@ -41,7 +41,6 @@ def _md5(s: str) -> str:
 
 
 def _normalize_url(raw: str) -> str:
-    """Normaliza URL removendo esquema, www, trailing slash, query e fragmento."""
     if not raw:
         return ""
     parsed = urlparse(raw)
@@ -52,35 +51,53 @@ def _normalize_url(raw: str) -> str:
     return urlunparse(("https", netloc, path, "", "", ""))
 
 
-def _generate_id(item: dict) -> str:
-    """Gera ID estável: md5(title|org|url_normalizada)."""
+def generate_id(item: dict) -> str:
+    """Gera ID estavel: md5(title|org|url_normalizada)."""
     url = _normalize_url(item.get("url", ""))
     title = (item.get("title") or "").strip().lower()
     org = (item.get("org") or "").strip().lower()
     return _md5(title + "|" + org + "|" + url)
 
 
-def is_new_and_save(item: dict) -> bool:
-    uid = _generate_id(item)
+def get_known_ids(items: list[dict]) -> set[str]:
+    """Um unico SELECT retorna quais IDs da lista ja existem no banco."""
+    if not items:
+        return set()
+    ids = [generate_id(item) for item in items]
     conn = _connect()
     cur = conn.cursor()
     try:
-        cur.execute("SELECT 1 FROM notices WHERE id = %s", (uid,))
-        if cur.fetchone():
-            return False
-        cur.execute(
-            "INSERT INTO notices (id, title, org, url, published, raw_hash) VALUES (%s, %s, %s, %s, %s, %s)",
-            (
-                uid,
-                item.get("title"),
-                item.get("org"),
-                item.get("url"),
-                item.get("published"),
-                _md5(json.dumps(item, ensure_ascii=False, sort_keys=True)),
-            ),
+        cur.execute("SELECT id FROM notices WHERE id = ANY(%s)", (ids,))
+        return {row[0] for row in cur.fetchall()}
+    finally:
+        cur.close()
+        conn.close()
+
+
+def save_many(items: list[dict]) -> None:
+    """Insere multiplos itens em lote. Ignora conflitos (ON CONFLICT DO NOTHING)."""
+    if not items:
+        return
+    rows = []
+    for item in items:
+        uid = generate_id(item)
+        rows.append((
+            uid,
+            item.get("title"),
+            item.get("org"),
+            item.get("url"),
+            item.get("published"),
+            _md5(json.dumps(item, ensure_ascii=False, sort_keys=True)),
+        ))
+    conn = _connect()
+    cur = conn.cursor()
+    try:
+        cur.executemany(
+            "INSERT INTO notices (id, title, org, url, published, raw_hash) "
+            "VALUES (%s, %s, %s, %s, %s, %s) ON CONFLICT DO NOTHING",
+            rows,
         )
         conn.commit()
-        return True
     finally:
         cur.close()
         conn.close()

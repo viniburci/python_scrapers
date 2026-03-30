@@ -15,6 +15,7 @@ _LOGIN_URL = "https://me.com.br/do/Login.mvc/LoginNew"
 _LIST_URL = "https://me.com.br/supplier/inbox/pendencies/3"
 _BASE_URL = "https://me.com.br"
 _MAX_PAGES = 3  # 50 itens/pagina => 150 itens por ciclo
+_MODAL_TIMEOUT = 2_000  # ms — skip rapido se item nao tem modal
 
 
 class MeCompraScraper(BaseScraper):
@@ -22,7 +23,7 @@ class MeCompraScraper(BaseScraper):
     url = _LIST_URL
 
     def run(self) -> list[dict]:
-        """Coleta lista basica de licitacoes (sem abrir modais — rapido)."""
+        """Login + coleta lista + abre modais, tudo numa unica sessao."""
         with Stealth().use_sync(sync_playwright()) as p:
             browser = p.chromium.launch(headless=True)
             context = browser.new_context(
@@ -35,7 +36,7 @@ class MeCompraScraper(BaseScraper):
             page = context.new_page()
             try:
                 self._login(page)
-                items = self._collect_pages(page)
+                items = self._collect_with_modals(page)
             except Exception as e:
                 logger.error("[ME] Erro durante scraping: %s", e)
                 items = []
@@ -44,66 +45,6 @@ class MeCompraScraper(BaseScraper):
 
         logger.info("[ME] %d itens encontrados", len(items))
         return items
-
-    def enrich(self, items: list[dict]):
-        """Abre os modais apenas para as licitacoes novas, na pagina da lista."""
-        if not items:
-            return
-
-        logger.info("[ME] Buscando itens de %d licitacao(oes) nova(s)...", len(items))
-
-        with Stealth().use_sync(sync_playwright()) as p:
-            browser = p.chromium.launch(headless=True)
-            context = browser.new_context(
-                user_agent=(
-                    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-                    "AppleWebKit/537.36 (KHTML, like Gecko) "
-                    "Chrome/124.0.0.0 Safari/537.36"
-                )
-            )
-            page = context.new_page()
-            try:
-                self._login(page)
-                page.goto(_LIST_URL, timeout=60_000)
-                page.wait_for_selector("tr[data-pk]", timeout=20_000)
-
-                pendentes = {item["url"]: item for item in items}
-
-                for _ in range(_MAX_PAGES):
-                    page.wait_for_selector("tr[data-pk]", timeout=15_000)
-                    page_items = self.parse(page.content())
-                    rows = page.locator("tr[data-pk]")
-
-                    for idx, page_item in enumerate(page_items):
-                        if page_item["url"] in pendentes:
-                            target = pendentes.pop(page_item["url"])
-                            try:
-                                modal_link = rows.nth(idx).locator("a.modal-quotations")
-                                modal_link.click(timeout=5000)
-                                page.wait_for_selector("#modal-grid", timeout=10_000)
-                                page.wait_for_timeout(1500)
-                                target["itens"], target["total_itens"] = self._parse_modal_items(
-                                    page.locator(".modal-content").inner_html()
-                                )
-                                page.locator(".close.modal-quotations").click()
-                                page.wait_for_selector(".modal-content", state="hidden", timeout=5_000)
-                                logger.info("[ME] Itens extraidos: %s", target["title"])
-                            except Exception as e:
-                                logger.warning("[ME] Erro no modal de %s: %s", target["title"], e)
-
-                    if not pendentes:
-                        break
-
-                    next_btn = page.locator("[data-cy='next-page']")
-                    if next_btn.is_disabled():
-                        break
-                    next_btn.click()
-                    page.wait_for_selector("tr[data-pk]", timeout=15_000)
-
-            except Exception as e:
-                logger.error("[ME] Erro no enrich: %s", e)
-            finally:
-                browser.close()
 
     def _login(self, page):
         logger.info("[ME] Realizando login...")
@@ -127,16 +68,33 @@ class MeCompraScraper(BaseScraper):
         page.wait_for_timeout(3000)
         logger.info("[ME] Login concluido. URL: %s", page.url)
 
-    def _collect_pages(self, page) -> list[dict]:
+    def _collect_with_modals(self, page) -> list[dict]:
         page.goto(_LIST_URL, timeout=60_000)
         page.wait_for_selector("tr[data-pk]", timeout=20_000)
 
         all_items = []
         for page_num in range(1, _MAX_PAGES + 1):
             page.wait_for_selector("tr[data-pk]", timeout=15_000)
-            items = self.parse(page.content())
-            all_items.extend(items)
-            logger.info("[ME] Pagina %d: %d licitacoes", page_num, len(items))
+            page_items = self.parse(page.content())
+            rows = page.locator("tr[data-pk]")
+
+            for idx, item in enumerate(page_items):
+                try:
+                    modal_link = rows.nth(idx).locator("a.modal-quotations")
+                    modal_link.click(timeout=_MODAL_TIMEOUT)
+                    page.wait_for_selector("#modal-grid", timeout=10_000)
+                    page.wait_for_timeout(1500)
+                    item["itens"], item["total_itens"] = self._parse_modal_items(
+                        page.locator(".modal-content").inner_html()
+                    )
+                    page.locator(".close.modal-quotations").click()
+                    page.wait_for_selector(".modal-content", state="hidden", timeout=5_000)
+                except Exception:
+                    pass  # item sem modal, continua
+
+                all_items.append(item)
+
+            logger.info("[ME] Pagina %d: %d licitacoes", page_num, len(page_items))
 
             next_btn = page.locator("[data-cy='next-page']")
             if next_btn.is_disabled() or page_num == _MAX_PAGES:

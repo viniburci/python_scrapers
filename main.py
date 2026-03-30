@@ -2,7 +2,7 @@ import logging
 import time
 
 from config import CHECK_INTERVAL
-from db import init_db, is_new_and_save
+from db import generate_id, get_known_ids, init_db, save_many
 from notifier import send
 from scrapers import SCRAPERS
 
@@ -24,22 +24,32 @@ def main():
                 logger.info("Buscando: %s (%s)", scraper.name, scraper.url)
                 items = scraper.run()
 
+                # Um unico SELECT para todos os itens da pagina
+                known = get_known_ids(items)
+
                 new_items = []
                 for item in items:
-                    if is_new_and_save(item):
+                    if generate_id(item) not in known:
                         new_items.append(item)
                     elif scraper.ordered:
-                        # Otimizacao: se o scraper retorna itens ordenados do mais
-                        # recente para o mais antigo, para ao encontrar o primeiro
-                        # item ja conhecido (os demais tambem serao conhecidos).
                         logger.info(
                             "[%s] Item ja processado: '%s'. Interrompendo.",
                             scraper.name, item.get("title", "")[:50],
                         )
                         break
 
-                if new_items and hasattr(scraper, "enrich"):
-                    scraper.enrich(new_items)
+                # Deduplica itens com mesmo ID no mesmo lote (evita envio duplo)
+                seen = set()
+                deduped = []
+                for item in new_items:
+                    uid = generate_id(item)
+                    if uid not in seen:
+                        seen.add(uid)
+                        deduped.append(item)
+                new_items = deduped
+
+                # Um unico INSERT em lote para todos os novos
+                save_many(new_items)
 
                 for item in new_items:
                     logger.info("[NOVO] [%s] %s", scraper.name, item["title"])
