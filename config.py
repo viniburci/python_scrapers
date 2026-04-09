@@ -20,3 +20,9 @@ CHECK_INTERVAL = int(os.getenv("CHECK_INTERVAL", "1800"))
 # ME Compras
 ME_USERNAME = os.getenv("ME_USERNAME", "")
 ME_PASSWORD = os.getenv("ME_PASSWORD", "")
+
+# Filtro de palavras-chave (separadas por virgula no .env)
+# Exemplo: FILTER_KEYWORDS=serviço,manutenção,limpeza,conservação
+# Deixar vazio para receber todas as licitacoes sem filtro
+_raw = os.getenv("FILTER_KEYWORDS", "")
+FILTER_KEYWORDS = [kw.strip().lower() for kw in _raw.split(",") if kw.strip()]

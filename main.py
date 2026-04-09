@@ -1,7 +1,7 @@
 import logging
 import time
 
-from config import CHECK_INTERVAL
+from config import CHECK_INTERVAL, FILTER_KEYWORDS
 from db import generate_id, get_known_ids, init_db, save_many
 from notifier import send
 from scrapers import SCRAPERS
@@ -12,6 +12,16 @@ logging.basicConfig(
     datefmt="%Y-%m-%d %H:%M:%S",
 )
 logger = logging.getLogger(__name__)
+
+
+def _matches_filter(item: dict) -> bool:
+    """Retorna True se o item passa pelo filtro de palavras-chave.
+    Se FILTER_KEYWORDS estiver vazio, todos os itens passam."""
+    if not FILTER_KEYWORDS:
+        return True
+    itens_text = " ".join(i.get("descricao", "") for i in item.get("itens", []))
+    text = f"{item.get('title', '')} {item.get('obj', '')} {itens_text}".lower()
+    return any(kw in text for kw in FILTER_KEYWORDS)
 
 
 def main():
@@ -53,7 +63,10 @@ def main():
 
                 for item in new_items:
                     logger.info("[NOVO] [%s] %s", scraper.name, item["title"])
-                    send(item, scraper.name)
+                    if _matches_filter(item):
+                        send(item, scraper.name)
+                    else:
+                        logger.info("[FILTRADO] [%s] %s", scraper.name, item["title"])
             except Exception as e:
                 logger.error("Erro no scraper %s: %s", scraper.name, e, exc_info=True)
 
